@@ -42,13 +42,15 @@ const upload = multer({
 
 // Função para extrair preço numérico
 function extractPrice(priceString) {
-  if (!priceString) return 0;
+  if (!priceString || priceString.trim() === '') return 0;
   
-  // Remove "R$", espaços, pontos e vírgulas, converte para número
+  // Remove "R$", espaços, pontos (milhares) e troca vírgula por ponto
   const cleanPrice = priceString
+    .toString()
     .replace(/R\$\s?/, '')
     .replace(/\./g, '')
-    .replace(/,/g, '.');
+    .replace(/,/g, '.')
+    .trim();
   
   const price = parseFloat(cleanPrice);
   return isNaN(price) ? 0 : price;
@@ -66,61 +68,54 @@ function processCSV(filePath) {
       })
       .on('end', () => {
         try {
-          // Nomes das lojas na ordem correta
-          const lojas = [
-            'Loja da Suzy',
-            'Loja Top Celulares',
-            'Loja HUSSEIN',
-            'Loja Paulo',
-            'Loja HM',
-            'Loja General',
-            'Loja JR',
-            'Loja Mega Cell'
+          // Configuração das lojas e suas colunas
+          const lojasConfig = [
+            { nome: 'Loja da Suzy', colunas: ['Loja da Suzy', '', '_1'] },
+            { nome: 'Loja Top Celulares', colunas: ['Loja Top Celulares', '_3', '_4'] },
+            { nome: 'Loja HUSSEIN', colunas: ['Loja HUSSEIN', '_6', '_7'] },
+            { nome: 'Loja Paulo', colunas: ['Loja Paulo', '_9', '_10'] },
+            { nome: 'Loja HM', colunas: ['Loja HM', '_12', '_13'] },
+            { nome: 'Loja General', colunas: ['Loja General', '_15', '_16'] },
+            { nome: 'Loja JR', colunas: ['Loja JR', '_18', '_19'] },
+            { nome: 'Loja Mega Cell', colunas: ['Loja Mega Cell', '_21', '_22'] }
           ];
           
           const processedData = [];
           
           // Processar cada loja
-          lojas.forEach((loja, lojaIndex) => {
+          lojasConfig.forEach((lojaConfig) => {
             const produtos = [];
             
             // Começar da linha 2 (índice 1) para pular cabeçalhos
             for (let i = 1; i < results.length; i++) {
               const row = results[i];
-              const columns = Object.keys(row);
               
-              let codigo, modelo, preco;
-              
-              // Determinar colunas baseado na posição da loja
-              if (lojaIndex === 0) {
-                // Primeira loja (Loja da Suzy)
-                codigo = row[columns[0]];
-                modelo = row[columns[1]];
-                preco = row[columns[2]];
-              } else {
-                // Outras lojas - cada loja ocupa 4 colunas
-                const baseCol = lojaIndex * 4;
-                if (baseCol < columns.length) {
-                  codigo = row[columns[baseCol]];
-                  modelo = row[columns[baseCol + 1]];
-                  preco = row[columns[baseCol + 2]];
-                }
-              }
+              const codigo = row[lojaConfig.colunas[0]];
+              const modelo = row[lojaConfig.colunas[1]];
+              const preco = row[lojaConfig.colunas[2]];
               
               // Adicionar produto se tiver dados válidos
-              if (codigo && modelo && preco && codigo.trim() !== '' && modelo.trim() !== '') {
-                produtos.push({
-                  codigo: codigo.trim(),
-                  modelo: modelo.trim(),
-                  preco: extractPrice(preco)
-                });
+              if (codigo && modelo && preco && 
+                  codigo.trim() !== '' && 
+                  modelo.trim() !== '' && 
+                  preco.trim() !== '') {
+                
+                const precoNumerico = extractPrice(preco);
+                
+                if (precoNumerico > 0) {
+                  produtos.push({
+                    codigo: codigo.trim(),
+                    modelo: modelo.trim(),
+                    preco: precoNumerico
+                  });
+                }
               }
             }
             
             // Adicionar loja aos dados processados
             if (produtos.length > 0) {
               processedData.push({
-                loja: loja,
+                loja: lojaConfig.nome,
                 total_produtos: produtos.length,
                 produtos: produtos
               });
