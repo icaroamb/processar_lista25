@@ -329,7 +329,7 @@ async function syncWithBubble(csvData, gorduraValor) {
             preco_original: precoOriginal,
             preco_final: precoFinal,
             preco_ordenacao: precoOrdenacao,
-            melhor_preco: false,
+            melhor_preco?: false,
             status_ativo: 'yes'
           });
           results.relacoes_criadas++;
@@ -345,7 +345,7 @@ async function syncWithBubble(csvData, gorduraValor) {
       }
     }
     
-    // Atualizar estatísticas dos produtos e melhor_preco
+    // Atualizar estatísticas dos produtos e melhor_preco?
     console.log('\n📊 Atualizando estatísticas dos produtos...');
     const produtosAtualizados = await fetchAllFromBubble('1 - ProdutoFornecedor _25marco');
     
@@ -369,12 +369,12 @@ async function syncWithBubble(csvData, gorduraValor) {
         preco_medio: stats.preco_medio
       });
       
-      // Atualizar melhor_preco nas relações
+      // Atualizar melhor_preco? nas relações
       for (const relacao of relacoes) {
         const isMelhorPreco = relacao.preco_original === stats.menor_preco && relacao.preco_original > 0;
-        if (relacao.melhor_preco !== isMelhorPreco) {
+        if (relacao.melhor_preco? !== isMelhorPreco) {
           await updateInBubble('1 - ProdutoFornecedor _25marco', relacao._id, {
-            melhor_preco: isMelhorPreco
+            melhor_preco?: isMelhorPreco
           });
         }
       }
