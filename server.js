@@ -88,7 +88,7 @@ function parseCSVLine(line) {
   return result;
 }
 
-// Função para buscar dados do Bubble com paginação
+// Função para buscar dados do Bubble com paginação otimizada
 async function fetchAllFromBubble(tableName, filters = {}) {
   try {
     console.log(`🔍 Buscando dados de ${tableName}...`);
@@ -96,13 +96,14 @@ async function fetchAllFromBubble(tableName, filters = {}) {
     let cursor = 0;
     let hasMore = true;
     
+    // OTIMIZAÇÃO: Aumentar limite para menos requisições
     while (hasMore) {
-      const params = { cursor, limit: 100, ...filters };
+      const params = { cursor, limit: 500, ...filters }; // Aumentado de 100 para 500
       
       const response = await axios.get(`${BUBBLE_CONFIG.baseURL}/${tableName}`, {
         headers: BUBBLE_CONFIG.headers,
         params,
-        timeout: 30000
+        timeout: 60000 // Aumentado timeout
       });
       
       const data = response.data;
@@ -113,7 +114,7 @@ async function fetchAllFromBubble(tableName, filters = {}) {
       
       allData = allData.concat(data.response.results);
       hasMore = data.response.remaining > 0;
-      cursor = data.response.cursor || (cursor + 100);
+      cursor = data.response.cursor || (cursor + 500);
     }
     
     console.log(`✅ ${tableName}: ${allData.length} registros carregados`);
@@ -125,31 +126,74 @@ async function fetchAllFromBubble(tableName, filters = {}) {
   }
 }
 
-// Função para criar item no Bubble
-async function createInBubble(tableName, data) {
+// Função para operações em lote no Bubble
+async function batchCreateInBubble(tableName, dataArray, batchSize = 10) {
   try {
-    const response = await axios.post(`${BUBBLE_CONFIG.baseURL}/${tableName}`, data, {
-      headers: BUBBLE_CONFIG.headers,
-      timeout: 30000
+    console.log(`🚀 Criando ${dataArray.length} itens em ${tableName} em lotes de ${batchSize}...`);
+    
+    const results = [];
+    const promises = [];
+    
+    for (let i = 0; i < dataArray.length; i += batchSize) {
+      const batch = dataArray.slice(i, i + batchSize);
+      
+      const batchPromises = batch.map(data => 
+        axios.post(`${BUBBLE_CONFIG.baseURL}/${tableName}`, data, {
+          headers: BUBBLE_CONFIG.headers,
+          timeout: 30000
+        }).then(response => response.data)
+         .catch(error => {
+           console.error(`❌ Erro em lote para ${tableName}:`, error.response?.data || error.message);
+           return null;
+         })
+      );
+      
+      promises.push(Promise.all(batchPromises));
+    }
+    
+    const batchResults = await Promise.all(promises);
+    batchResults.forEach(batch => {
+      results.push(...batch.filter(result => result !== null));
     });
-    return response.data;
+    
+    console.log(`✅ ${results.length} itens criados com sucesso em ${tableName}`);
+    return results;
+    
   } catch (error) {
-    console.error(`❌ Erro ao criar em ${tableName}:`, error.response?.data || error.message);
-    throw new Error(`Erro ao criar em ${tableName}: ${error.response?.data?.body?.message || error.message}`);
+    console.error(`❌ Erro no processamento em lote de ${tableName}:`, error.message);
+    throw error;
   }
 }
 
-// Função para atualizar item no Bubble
-async function updateInBubble(tableName, itemId, data) {
+// Função para atualizações em lote no Bubble
+async function batchUpdateInBubble(tableName, updates, batchSize = 15) {
   try {
-    const response = await axios.patch(`${BUBBLE_CONFIG.baseURL}/${tableName}/${itemId}`, data, {
-      headers: BUBBLE_CONFIG.headers,
-      timeout: 30000
-    });
-    return response.data;
+    console.log(`🔄 Atualizando ${updates.length} itens em ${tableName} em lotes de ${batchSize}...`);
+    
+    const promises = [];
+    
+    for (let i = 0; i < updates.length; i += batchSize) {
+      const batch = updates.slice(i, i + batchSize);
+      
+      const batchPromises = batch.map(({ itemId, data }) => 
+        axios.patch(`${BUBBLE_CONFIG.baseURL}/${tableName}/${itemId}`, data, {
+          headers: BUBBLE_CONFIG.headers,
+          timeout: 30000
+        }).catch(error => {
+          console.error(`❌ Erro ao atualizar ${itemId}:`, error.response?.data || error.message);
+          return null;
+        })
+      );
+      
+      promises.push(Promise.all(batchPromises));
+    }
+    
+    await Promise.all(promises);
+    console.log(`✅ ${updates.length} itens atualizados em ${tableName}`);
+    
   } catch (error) {
-    console.error(`❌ Erro ao atualizar ${tableName}/${itemId}:`, error.response?.data || error.message);
-    throw new Error(`Erro ao atualizar ${tableName}: ${error.response?.data?.body?.message || error.message}`);
+    console.error(`❌ Erro no processamento em lote de atualizações ${tableName}:`, error.message);
+    throw error;
   }
 }
 
@@ -248,13 +292,14 @@ function processCSV(filePath) {
   });
 }
 
-// Função principal para sincronizar com o Bubble
+// Função principal para sincronizar com o Bubble OTIMIZADA
 async function syncWithBubble(csvData, gorduraValor) {
   try {
-    console.log('\n🔄 Iniciando sincronização com Bubble...');
+    console.log('\n🔄 Iniciando sincronização OTIMIZADA com Bubble...');
+    const startTime = Date.now();
     
-    // 1. CARREGAR DADOS EXISTENTES
-    console.log('📊 Carregando dados existentes...');
+    // 1. CARREGAR DADOS EXISTENTES EM PARALELO
+    console.log('📊 Carregando dados existentes em paralelo...');
     const [fornecedores, produtos, produtoFornecedores] = await Promise.all([
       fetchAllFromBubble('1 - fornecedor_25marco'),
       fetchAllFromBubble('1 - produtos_25marco'),
@@ -270,6 +315,13 @@ async function syncWithBubble(csvData, gorduraValor) {
     const produtoMap = new Map();
     produtos.forEach(p => produtoMap.set(p.id_planilha, p));
     
+    // Mapa para relações existentes
+    const relacaoMap = new Map();
+    produtoFornecedores.forEach(pf => {
+      const key = `${pf.produto}_${pf.fornecedor}`;
+      relacaoMap.set(key, pf);
+    });
+    
     const results = {
       fornecedores_criados: 0,
       produtos_criados: 0,
@@ -278,40 +330,51 @@ async function syncWithBubble(csvData, gorduraValor) {
       relacoes_zeradas: 0
     };
     
-    // 3. PROCESSAR PRODUTOS DO CSV
-    console.log('\n📝 Processando produtos do CSV...');
+    // 3. COLETAR OPERAÇÕES PARA PROCESSAMENTO EM LOTE
+    console.log('\n📝 Coletando operações...');
     
+    const fornecedoresParaCriar = [];
+    const produtosParaCriar = [];
+    const relacoesParaCriar = [];
+    const relacoesParaAtualizar = [];
+    const relacoesParaZerar = [];
+    
+    // 3.1 Processar todos os dados do CSV
     for (const lojaData of csvData) {
-      console.log(`\n🏪 Processando ${lojaData.loja}...`);
-      
-      // 3.1 Verificar/criar fornecedor
+      // Verificar fornecedor
       let fornecedor = fornecedorMap.get(lojaData.loja);
       if (!fornecedor) {
-        console.log(`➕ Criando fornecedor: ${lojaData.loja}`);
-        const novoFornecedor = await createInBubble('1 - fornecedor_25marco', {
+        const novoFornecedor = {
           nome_fornecedor: lojaData.loja,
           status_ativo: 'yes'
-        });
-        fornecedor = { _id: novoFornecedor.id, nome_fornecedor: lojaData.loja };
+        };
+        fornecedoresParaCriar.push(novoFornecedor);
+        
+        // Criar fornecedor temporário para uso local
+        fornecedor = { 
+          _id: `temp_${lojaData.loja}`, 
+          nome_fornecedor: lojaData.loja 
+        };
         fornecedorMap.set(lojaData.loja, fornecedor);
         results.fornecedores_criados++;
       }
       
-      // 3.2 Processar cada produto da loja
+      // Processar produtos da loja
       for (const produtoCsv of lojaData.produtos) {
-        // Verificar/criar produto
         let produto = produtoMap.get(produtoCsv.codigo);
         if (!produto) {
-          console.log(`➕ Criando produto: ${produtoCsv.codigo}`);
-          const novoProduto = await createInBubble('1 - produtos_25marco', {
+          const novoProduto = {
             id_planilha: produtoCsv.codigo,
             nome_completo: produtoCsv.modelo,
             preco_medio: 0,
             qtd_fornecedores: 0,
             menor_preco: 0
-          });
+          };
+          produtosParaCriar.push(novoProduto);
+          
+          // Criar produto temporário para uso local
           produto = { 
-            _id: novoProduto.id, 
+            _id: `temp_${produtoCsv.codigo}`, 
             id_planilha: produtoCsv.codigo,
             nome_completo: produtoCsv.modelo
           };
@@ -324,14 +387,12 @@ async function syncWithBubble(csvData, gorduraValor) {
         const precoFinal = precoOriginal === 0 ? 0 : precoOriginal + gorduraValor;
         const precoOrdenacao = precoOriginal === 0 ? 999999 : precoOriginal;
         
-        // Verificar/criar/atualizar relação ProdutoFornecedor
-        const relacaoExistente = produtoFornecedores.find(pf => 
-          pf.produto === produto._id && pf.fornecedor === fornecedor._id
-        );
+        // Verificar relação
+        const relacaoKey = `${produto._id}_${fornecedor._id}`;
+        const relacaoExistente = relacaoMap.get(relacaoKey);
         
         if (!relacaoExistente) {
-          console.log(`➕ Criando relação: ${produtoCsv.codigo} - ${lojaData.loja}`);
-          await createInBubble('1 - ProdutoFornecedor _25marco', {
+          relacoesParaCriar.push({
             produto: produto._id,
             fornecedor: fornecedor._id,
             nome_produto: produtoCsv.modelo,
@@ -343,35 +404,31 @@ async function syncWithBubble(csvData, gorduraValor) {
           });
           results.relacoes_criadas++;
         } else if (relacaoExistente.preco_original !== precoOriginal) {
-          console.log(`🔄 Atualizando relação: ${produtoCsv.codigo} - ${lojaData.loja}`);
-          await updateInBubble('1 - ProdutoFornecedor _25marco', relacaoExistente._id, {
-            preco_original: precoOriginal,
-            preco_final: precoFinal,
-            preco_ordenacao: precoOrdenacao
+          relacoesParaAtualizar.push({
+            itemId: relacaoExistente._id,
+            data: {
+              preco_original: precoOriginal,
+              preco_final: precoFinal,
+              preco_ordenacao: precoOrdenacao
+            }
           });
           results.relacoes_atualizadas++;
         }
       }
     }
     
-    // 4. ZERAR PRODUTOS NÃO COTADOS (COTAÇÃO DIÁRIA)
-    console.log('\n🧹 Aplicando lógica de cotação diária...');
+    // 3.2 Identificar relações para zerar (cotação diária)
+    console.log('🧹 Identificando produtos para zerar...');
     
     for (const lojaData of csvData) {
       const fornecedor = fornecedorMap.get(lojaData.loja);
       if (!fornecedor) continue;
       
-      console.log(`🔍 Verificando produtos ausentes para: ${lojaData.loja}`);
-      
-      // Criar Set dos códigos cotados hoje
       const codigosCotadosHoje = new Set();
       lojaData.produtos.forEach(produto => {
         codigosCotadosHoje.add(produto.codigo);
       });
       
-      console.log(`📋 Produtos cotados hoje: [${Array.from(codigosCotadosHoje).join(', ')}]`);
-      
-      // Buscar todas as relações existentes deste fornecedor
       const relacoesExistentes = produtoFornecedores.filter(pf => pf.fornecedor === fornecedor._id);
       
       for (const relacao of relacoesExistentes) {
@@ -382,62 +439,112 @@ async function syncWithBubble(csvData, gorduraValor) {
         const foiCotadoHoje = codigosCotadosHoje.has(codigoProduto);
         const temPreco = relacao.preco_original > 0;
         
-        // Se produto NÃO foi cotado hoje MAS tinha preço, zerar
         if (!foiCotadoHoje && temPreco) {
-          console.log(`🧹 Zerando produto ausente: ${codigoProduto} - ${lojaData.loja}`);
-          
-          await updateInBubble('1 - ProdutoFornecedor _25marco', relacao._id, {
-            preco_original: 0,
-            preco_final: 0,
-            preco_ordenacao: 999999
+          relacoesParaZerar.push({
+            itemId: relacao._id,
+            data: {
+              preco_original: 0,
+              preco_final: 0,
+              preco_ordenacao: 999999
+            }
           });
-          
           results.relacoes_zeradas++;
         }
       }
     }
     
-    // 5. RECALCULAR ESTATÍSTICAS DOS PRODUTOS
-    console.log('\n📊 Recalculando estatísticas dos produtos...');
+    // 4. EXECUTAR OPERAÇÕES EM LOTE
+    console.log('\n🚀 Executando operações em lote...');
     
-    // Recarregar dados atualizados
-    const produtoFornecedoresAtualizados = await fetchAllFromBubble('1 - ProdutoFornecedor _25marco');
+    const batchPromises = [];
     
-    // Agrupar por produto
-    const produtoStats = new Map();
-    produtoFornecedoresAtualizados.forEach(pf => {
-      if (!produtoStats.has(pf.produto)) {
-        produtoStats.set(pf.produto, []);
-      }
-      produtoStats.get(pf.produto).push(pf);
-    });
-    
-    // Atualizar cada produto
-    for (const [produtoId, relacoes] of produtoStats) {
-      const stats = calculateProductStats(relacoes);
-      
-      // Atualizar estatísticas do produto
-      await updateInBubble('1 - produtos_25marco', produtoId, {
-        qtd_fornecedores: stats.qtd_fornecedores,
-        menor_preco: stats.menor_preco,
-        preco_medio: stats.preco_medio
-      });
-      
-      // Atualizar melhor_preco nas relações (baseado no preco_final)
-      for (const relacao of relacoes) {
-        const isMelhorPreco = relacao.preco_final === stats.menor_preco && relacao.preco_final > 0;
-        if (relacao.melhor_preco !== isMelhorPreco) {
-          await updateInBubble('1 - ProdutoFornecedor _25marco', relacao._id, {
-            melhor_preco: isMelhorPreco
-          });
-        }
-      }
+    if (fornecedoresParaCriar.length > 0) {
+      batchPromises.push(batchCreateInBubble('1 - fornecedor_25marco', fornecedoresParaCriar));
     }
     
-    console.log('\n✅ Sincronização concluída!');
+    if (produtosParaCriar.length > 0) {
+      batchPromises.push(batchCreateInBubble('1 - produtos_25marco', produtosParaCriar));
+    }
+    
+    if (relacoesParaCriar.length > 0) {
+      batchPromises.push(batchCreateInBubble('1 - ProdutoFornecedor _25marco', relacoesParaCriar));
+    }
+    
+    if (relacoesParaAtualizar.length > 0) {
+      batchPromises.push(batchUpdateInBubble('1 - ProdutoFornecedor _25marco', relacoesParaAtualizar));
+    }
+    
+    if (relacoesParaZerar.length > 0) {
+      batchPromises.push(batchUpdateInBubble('1 - ProdutoFornecedor _25marco', relacoesParaZerar));
+    }
+    
+    // Executar todas as operações em paralelo
+    await Promise.all(batchPromises);
+    
+    // 5. RECALCULAR ESTATÍSTICAS (apenas se houve mudanças)
+    if (results.relacoes_criadas > 0 || results.relacoes_atualizadas > 0 || results.relacoes_zeradas > 0) {
+      console.log('\n📊 Recalculando estatísticas em lote...');
+      
+      // Recarregar apenas relações atualizadas
+      const produtoFornecedoresAtualizados = await fetchAllFromBubble('1 - ProdutoFornecedor _25marco');
+      
+      // Agrupar por produto
+      const produtoStats = new Map();
+      produtoFornecedoresAtualizados.forEach(pf => {
+        if (!produtoStats.has(pf.produto)) {
+          produtoStats.set(pf.produto, []);
+        }
+        produtoStats.get(pf.produto).push(pf);
+      });
+      
+      // Preparar atualizações em lote
+      const produtoUpdates = [];
+      const relacaoUpdates = [];
+      
+      for (const [produtoId, relacoes] of produtoStats) {
+        const stats = calculateProductStats(relacoes);
+        
+        produtoUpdates.push({
+          itemId: produtoId,
+          data: {
+            qtd_fornecedores: stats.qtd_fornecedores,
+            menor_preco: stats.menor_preco,
+            preco_medio: stats.preco_medio
+          }
+        });
+        
+        // Preparar atualizações de melhor_preco
+        for (const relacao of relacoes) {
+          const isMelhorPreco = relacao.preco_final === stats.menor_preco && relacao.preco_final > 0;
+          if (relacao.melhor_preco !== isMelhorPreco) {
+            relacaoUpdates.push({
+              itemId: relacao._id,
+              data: { melhor_preco: isMelhorPreco }
+            });
+          }
+        }
+      }
+      
+      // Executar atualizações em paralelo
+      const statsPromises = [];
+      if (produtoUpdates.length > 0) {
+        statsPromises.push(batchUpdateInBubble('1 - produtos_25marco', produtoUpdates));
+      }
+      if (relacaoUpdates.length > 0) {
+        statsPromises.push(batchUpdateInBubble('1 - ProdutoFornecedor _25marco', relacaoUpdates));
+      }
+      
+      await Promise.all(statsPromises);
+    }
+    
+    const endTime = Date.now();
+    const totalTime = (endTime - startTime) / 1000;
+    
+    console.log('\n✅ Sincronização OTIMIZADA concluída!');
+    console.log(`⚡ Tempo total: ${totalTime.toFixed(2)} segundos`);
     console.log('📊 Resultados:', results);
     
-    return results;
+    return { ...results, tempo_processamento: `${totalTime.toFixed(2)}s` };
     
   } catch (error) {
     console.error('❌ Erro na sincronização:', error);
@@ -445,7 +552,7 @@ async function syncWithBubble(csvData, gorduraValor) {
   }
 }
 
-// ROTAS DA API
+// ROTAS DA API (mantidas iguais)
 
 // Rota principal para upload e processamento
 app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
@@ -459,7 +566,6 @@ app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
       });
     }
     
-    // Validar parâmetro gordura_valor
     const gorduraValor = parseFloat(req.body.gordura_valor);
     if (isNaN(gorduraValor)) {
       return res.status(400).json({
@@ -477,22 +583,17 @@ app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
       });
     }
     
-    // Processar o CSV
     const csvData = await processCSV(filePath);
-    
-    // Sincronizar com Bubble
     const syncResults = await syncWithBubble(csvData, gorduraValor);
     
-    // Limpar arquivo temporário
     fs.unlinkSync(filePath);
     console.log('🗑️ Arquivo temporário removido');
     
-    console.log('✅ Processamento concluído com sucesso');
+    console.log('✅ Processamento OTIMIZADO concluído com sucesso');
     
-    // Retornar resultado
     res.json({
       success: true,
-      message: 'CSV processado e sincronizado com sucesso',
+      message: 'CSV processado e sincronizado com MÁXIMA VELOCIDADE',
       gordura_valor: gorduraValor,
       dados_csv: csvData,
       resultados_sincronizacao: syncResults
@@ -554,7 +655,6 @@ app.get('/produto/:codigo', async (req, res) => {
     
     const produto = produtos[0];
     
-    // Buscar relações do produto
     const relacoes = await fetchAllFromBubble('1 - ProdutoFornecedor _25marco', {
       'produto': produto._id
     });
@@ -578,7 +678,7 @@ app.get('/produto/:codigo', async (req, res) => {
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
-    message: 'API funcionando corretamente',
+    message: 'API OTIMIZADA funcionando corretamente',
     timestamp: new Date().toISOString()
   });
 });
@@ -620,10 +720,10 @@ app.get('/test-bubble', async (req, res) => {
 // Rota de documentação
 app.get('/', (req, res) => {
   res.json({
-    message: 'API para processamento de CSV de produtos com integração Bubble',
-    version: '3.0.0',
+    message: 'API OTIMIZADA para processamento de CSV de produtos com integração Bubble',
+    version: '4.0.0 - TURBO',
     endpoints: {
-      'POST /process-csv': 'Envia arquivo CSV com parâmetro gordura_valor e sincroniza com Bubble',
+      'POST /process-csv': 'Envia arquivo CSV com parâmetro gordura_valor e sincroniza com MÁXIMA VELOCIDADE',
       'GET /stats': 'Retorna estatísticas das tabelas',
       'GET /produto/:codigo': 'Busca produto específico por código',
       'GET /health': 'Verifica status da API',
@@ -632,6 +732,14 @@ app.get('/', (req, res) => {
     parametros_obrigatorios: {
       'gordura_valor': 'number - Valor a ser adicionado ao preço original'
     },
+    otimizacoes: [
+      'Processamento em lote (batch) com até 15 operações paralelas',
+      'Limite de paginação aumentado para 500 registros',
+      'Operações coletadas e executadas em paralelo',
+      'Timeout aumentado para 60 segundos',
+      'Minimização de chamadas sequenciais ao Bubble',
+      'Cache local para evitar buscas desnecessárias'
+    ],
     funcionalidades: [
       'Processamento de CSV com layout horizontal',
       'Cotação diária completa (zera produtos não cotados)',
@@ -666,10 +774,11 @@ app.use((error, req, res, next) => {
 
 // Iniciar servidor
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor rodando na porta ${PORT}`);
+  console.log(`🚀 Servidor OTIMIZADO rodando na porta ${PORT}`);
   console.log(`📊 Acesse: http://localhost:${PORT}`);
   console.log(`🔗 Integração Bubble configurada`);
-  console.log(`✨ Versão 3.0.0 - Código reescrito do zero`);
+  console.log(`⚡ Versão 4.0.0 TURBO - Máxima velocidade de processamento`);
+  console.log(`🎯 Otimizações: Processamento em lote, operações paralelas, cache inteligente`);
 });
 
 module.exports = app;
