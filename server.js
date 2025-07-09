@@ -42,7 +42,7 @@ const upload = multer({
 
 // Função para extrair preço numérico
 function extractPrice(priceString) {
-  if (!priceString || priceString.trim() === '') return 0;
+  if (!priceString || priceString.toString().trim() === '') return 0;
   
   // Remove "R$", espaços, pontos (milhares) e troca vírgula por ponto
   const cleanPrice = priceString
@@ -86,26 +86,29 @@ function processCSV(filePath) {
           lojasConfig.forEach((lojaConfig) => {
             const produtos = [];
             
-            // Começar da linha 2 (índice 1) para pular cabeçalhos
-            for (let i = 1; i < results.length; i++) {
+            // Processar todas as linhas (pular apenas se for cabeçalho)
+            for (let i = 0; i < results.length; i++) {
               const row = results[i];
               
               const codigo = row[lojaConfig.colunas[0]];
               const modelo = row[lojaConfig.colunas[1]];
               const preco = row[lojaConfig.colunas[2]];
               
+              // Pular linha de cabeçalho
+              if (codigo === 'Código' || !codigo) continue;
+              
               // Adicionar produto se tiver dados válidos
               if (codigo && modelo && preco && 
-                  codigo.trim() !== '' && 
-                  modelo.trim() !== '' && 
-                  preco.trim() !== '') {
+                  codigo.toString().trim() !== '' && 
+                  modelo.toString().trim() !== '' && 
+                  preco.toString().trim() !== '') {
                 
                 const precoNumerico = extractPrice(preco);
                 
                 if (precoNumerico > 0) {
                   produtos.push({
-                    codigo: codigo.trim(),
-                    modelo: modelo.trim(),
+                    codigo: codigo.toString().trim(),
+                    modelo: modelo.toString().trim(),
                     preco: precoNumerico
                   });
                 }
