@@ -54,6 +54,31 @@ function extractPrice(priceString) {
   return isNaN(price) ? 0 : price;
 }
 
+// Função para fazer parse correto do CSV respeitando aspas
+function parseCSVLine(line) {
+  const result = [];
+  let current = '';
+  let inQuotes = false;
+  
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    
+    if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === ',' && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  
+  // Adicionar último campo
+  result.push(current.trim());
+  
+  return result;
+}
+
 // Função para processar o CSV de forma super simples
 function processCSV(filePath) {
   return new Promise((resolve, reject) => {
@@ -73,8 +98,19 @@ function processCSV(filePath) {
         return resolve([]);
       }
       
-      // Pular a primeira linha (cabeçalho)
-      const dataLines = lines.slice(1);
+      // Processar cabeçalho para debug
+      const headerColumns = parseCSVLine(lines[0]);
+      console.log('📄 Cabeçalho tem', headerColumns.length, 'colunas');
+      console.log('🔍 Primeiros cabeçalhos:', headerColumns.slice(0, 10));
+      
+      // Verificar se a segunda linha também é cabeçalho
+      if (lines.length > 1) {
+        const secondLine = parseCSVLine(lines[1]);
+        console.log('🔍 Segunda linha:', secondLine.slice(0, 6));
+      }
+      
+      // Pular as duas primeiras linhas (cabeçalhos)
+      const dataLines = lines.slice(2);
       console.log('📊 Linhas de dados:', dataLines.length);
       
       // Configuração das lojas com índices fixos das colunas
@@ -100,8 +136,8 @@ function processCSV(filePath) {
         dataLines.forEach((line, lineIndex) => {
           if (!line || line.trim() === '') return;
           
-          // Dividir por vírgula de forma simples
-          const columns = line.split(',').map(col => col.trim().replace(/"/g, ''));
+          // Parse correto da linha CSV
+          const columns = parseCSVLine(line);
           
           if (columns.length < 31) {
             console.log(`⚠️  Linha ${lineIndex + 2} muito curta: ${columns.length} colunas`);
@@ -111,6 +147,15 @@ function processCSV(filePath) {
           const codigo = columns[lojaConfig.indices[0]];
           const modelo = columns[lojaConfig.indices[1]];
           const preco = columns[lojaConfig.indices[2]];
+          
+          // Debug para primeira loja nas primeiras linhas
+          if (lojaConfig.nome === 'Loja da Suzy' && lineIndex < 3) {
+            console.log(`🔍 Linha ${lineIndex + 2}:`, {
+              codigo: codigo,
+              modelo: modelo,
+              preco: preco
+            });
+          }
           
           // Verificar se tem dados válidos
           if (codigo && modelo && preco && 
