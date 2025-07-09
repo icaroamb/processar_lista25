@@ -709,4 +709,5 @@ app.listen(PORT, () => {
   console.log(`🔗 Integração Bubble configurada`);
 });
 
-module.exports = app;
+module.exports = app; 
+
