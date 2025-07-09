@@ -54,128 +54,91 @@ function extractPrice(priceString) {
   return isNaN(price) ? 0 : price;
 }
 
-// Função para fazer parse manual do CSV (mais robusta)
-function parseCSVManual(csvContent) {
-  const lines = csvContent.split('\n').filter(line => line.trim());
-  if (lines.length < 2) return [];
-  
-  const headers = [];
-  const data = [];
-  
-  // Processar cabeçalho
-  const headerLine = lines[0];
-  let currentField = '';
-  let inQuotes = false;
-  
-  for (let i = 0; i < headerLine.length; i++) {
-    const char = headerLine[i];
-    
-    if (char === '"') {
-      inQuotes = !inQuotes;
-    } else if (char === ',' && !inQuotes) {
-      headers.push(currentField.trim().replace(/"/g, ''));
-      currentField = '';
-    } else {
-      currentField += char;
-    }
-  }
-  headers.push(currentField.trim().replace(/"/g, ''));
-  
-  // Processar dados
-  for (let lineIndex = 1; lineIndex < lines.length; lineIndex++) {
-    const line = lines[lineIndex];
-    const row = {};
-    
-    currentField = '';
-    inQuotes = false;
-    let fieldIndex = 0;
-    
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i];
-      
-      if (char === '"') {
-        inQuotes = !inQuotes;
-      } else if (char === ',' && !inQuotes) {
-        row[headers[fieldIndex]] = currentField.trim().replace(/"/g, '');
-        currentField = '';
-        fieldIndex++;
-      } else {
-        currentField += char;
-      }
-    }
-    
-    // Adicionar último campo
-    if (fieldIndex < headers.length) {
-      row[headers[fieldIndex]] = currentField.trim().replace(/"/g, '');
-    }
-    
-    data.push(row);
-  }
-  
-  return data;
-}
-
-// Função para processar o CSV
+// Função para processar o CSV de forma super simples
 function processCSV(filePath) {
   return new Promise((resolve, reject) => {
     try {
+      console.log('📁 Lendo arquivo:', filePath);
+      
       // Ler arquivo como texto
       const fileContent = fs.readFileSync(filePath, 'utf8');
+      console.log('📄 Arquivo lido, tamanho:', fileContent.length, 'caracteres');
       
-      // Parse manual do CSV
-      const parsedData = parseCSVManual(fileContent);
+      // Dividir em linhas
+      const lines = fileContent.split('\n').filter(line => line.trim());
+      console.log('📋 Total de linhas:', lines.length);
       
-      console.log('🔍 DEBUG: Total de linhas processadas:', parsedData.length);
+      if (lines.length < 2) {
+        console.log('❌ Arquivo muito pequeno');
+        return resolve([]);
+      }
       
-      // Configuração das lojas e suas colunas
+      // Pular a primeira linha (cabeçalho)
+      const dataLines = lines.slice(1);
+      console.log('📊 Linhas de dados:', dataLines.length);
+      
+      // Configuração das lojas com índices fixos das colunas
       const lojasConfig = [
-        { nome: 'Loja da Suzy', colunas: ['Loja da Suzy', '', '_1'] },
-        { nome: 'Loja Top Celulares', colunas: ['Loja Top Celulares', '_3', '_4'] },
-        { nome: 'Loja HUSSEIN', colunas: ['Loja HUSSEIN', '_6', '_7'] },
-        { nome: 'Loja Paulo', colunas: ['Loja Paulo', '_9', '_10'] },
-        { nome: 'Loja HM', colunas: ['Loja HM', '_12', '_13'] },
-        { nome: 'Loja General', colunas: ['Loja General', '_15', '_16'] },
-        { nome: 'Loja JR', colunas: ['Loja JR', '_18', '_19'] },
-        { nome: 'Loja Mega Cell', colunas: ['Loja Mega Cell', '_21', '_22'] }
+        { nome: 'Loja da Suzy', indices: [0, 1, 2] },
+        { nome: 'Loja Top Celulares', indices: [4, 5, 6] },
+        { nome: 'Loja HUSSEIN', indices: [8, 9, 10] },
+        { nome: 'Loja Paulo', indices: [12, 13, 14] },
+        { nome: 'Loja HM', indices: [16, 17, 18] },
+        { nome: 'Loja General', indices: [20, 21, 22] },
+        { nome: 'Loja JR', indices: [24, 25, 26] },
+        { nome: 'Loja Mega Cell', indices: [28, 29, 30] }
       ];
       
       const processedData = [];
       
       // Processar cada loja
       lojasConfig.forEach((lojaConfig) => {
-        console.log(`\n🔍 DEBUG: Processando ${lojaConfig.nome}...`);
+        console.log(`\n🏪 Processando ${lojaConfig.nome}...`);
         const produtos = [];
         
-        // Processar todas as linhas
-        for (let i = 0; i < parsedData.length; i++) {
-          const row = parsedData[i];
+        // Processar cada linha de dados
+        dataLines.forEach((line, lineIndex) => {
+          if (!line || line.trim() === '') return;
           
-          const codigo = row[lojaConfig.colunas[0]];
-          const modelo = row[lojaConfig.colunas[1]];
-          const preco = row[lojaConfig.colunas[2]];
+          // Dividir por vírgula de forma simples
+          const columns = line.split(',').map(col => col.trim().replace(/"/g, ''));
           
-          // Pular linha de cabeçalho
-          if (codigo === 'Código' || !codigo) continue;
+          if (columns.length < 31) {
+            console.log(`⚠️  Linha ${lineIndex + 2} muito curta: ${columns.length} colunas`);
+            return;
+          }
           
-          // Adicionar produto se tiver dados válidos
+          const codigo = columns[lojaConfig.indices[0]];
+          const modelo = columns[lojaConfig.indices[1]];
+          const preco = columns[lojaConfig.indices[2]];
+          
+          // Verificar se tem dados válidos
           if (codigo && modelo && preco && 
-              codigo.toString().trim() !== '' && 
-              modelo.toString().trim() !== '' && 
-              preco.toString().trim() !== '') {
+              codigo.trim() !== '' && 
+              modelo.trim() !== '' && 
+              preco.trim() !== '') {
             
             const precoNumerico = extractPrice(preco);
             
             if (precoNumerico > 0) {
               produtos.push({
-                codigo: codigo.toString().trim(),
-                modelo: modelo.toString().trim(),
+                codigo: codigo.trim(),
+                modelo: modelo.trim(),
                 preco: precoNumerico
               });
             }
           }
-        }
+        });
         
-        console.log(`🔍 DEBUG: ${lojaConfig.nome} - ${produtos.length} produtos encontrados`);
+        console.log(`✅ ${lojaConfig.nome}: ${produtos.length} produtos encontrados`);
+        
+        // Mostrar alguns produtos para debug
+        if (produtos.length > 0) {
+          console.log('🔍 Primeiros 2 produtos:');
+          produtos.slice(0, 2).forEach(p => {
+            console.log(`   ${p.codigo} | ${p.modelo} | R$ ${p.preco}`);
+          });
+        }
         
         // Adicionar loja aos dados processados
         if (produtos.length > 0) {
@@ -187,7 +150,12 @@ function processCSV(filePath) {
         }
       });
       
-      console.log('🔍 DEBUG: Total de lojas processadas:', processedData.length);
+      console.log('\n📈 RESUMO FINAL:');
+      console.log('Total de lojas processadas:', processedData.length);
+      processedData.forEach(loja => {
+        console.log(`  ${loja.loja}: ${loja.total_produtos} produtos`);
+      });
+      
       resolve(processedData);
       
     } catch (error) {
@@ -200,24 +168,36 @@ function processCSV(filePath) {
 // Rota principal para upload e processamento
 app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
   try {
-    console.log('📤 Recebido arquivo:', req.file ? req.file.originalname : 'Nenhum');
+    console.log('\n🚀 === NOVA REQUISIÇÃO ===');
+    console.log('📤 Arquivo recebido:', req.file ? req.file.originalname : 'Nenhum');
     
     if (!req.file) {
+      console.log('❌ Nenhum arquivo enviado');
       return res.status(400).json({ 
         error: 'Nenhum arquivo CSV foi enviado' 
       });
     }
     
     const filePath = req.file.path;
-    console.log('📁 Processando arquivo:', filePath);
+    console.log('📁 Caminho do arquivo:', filePath);
+    
+    // Verificar se o arquivo existe
+    if (!fs.existsSync(filePath)) {
+      console.log('❌ Arquivo não encontrado');
+      return res.status(400).json({ 
+        error: 'Arquivo não encontrado' 
+      });
+    }
     
     // Processar o CSV
     const processedData = await processCSV(filePath);
     
     // Limpar arquivo temporário
     fs.unlinkSync(filePath);
+    console.log('🗑️  Arquivo temporário removido');
     
-    console.log('✅ Processamento concluído. Dados retornados:', processedData.length, 'lojas');
+    console.log('✅ Processamento concluído');
+    console.log('📊 Retornando dados de', processedData.length, 'lojas');
     
     // Retornar dados processados
     res.json(processedData);
