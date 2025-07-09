@@ -91,6 +91,7 @@ function parseCSVLine(line) {
 // Função para buscar dados do Bubble com paginação
 async function fetchAllFromBubble(tableName, filters = {}) {
   try {
+    console.log(`🔍 Iniciando busca em ${tableName}...`);
     let allData = [];
     let cursor = 0;
     let hasMore = true;
@@ -102,50 +103,120 @@ async function fetchAllFromBubble(tableName, filters = {}) {
         ...filters
       };
       
+      console.log(`📡 Requisição para ${tableName}: cursor=${cursor}, filtros=${JSON.stringify(filters)}`);
+      
       const response = await axios.get(`${BUBBLE_CONFIG.baseURL}/${tableName}`, {
         headers: BUBBLE_CONFIG.headers,
-        params
+        params,
+        timeout: 30000 // 30 segundos de timeout
       });
       
       const data = response.data;
+      console.log(`📊 Resposta recebida para ${tableName}:`, {
+        results: data.response?.results?.length || 0,
+        remaining: data.response?.remaining || 0,
+        cursor: data.response?.cursor || 0
+      });
+      
+      if (!data.response || !data.response.results) {
+        console.error(`❌ Estrutura de resposta inválida para ${tableName}:`, data);
+        throw new Error(`Estrutura de resposta inválida para ${tableName}`);
+      }
+      
       allData = allData.concat(data.response.results);
       
       hasMore = data.response.remaining > 0;
-      cursor += 100;
+      cursor = data.response.cursor || (cursor + 100);
       
-      console.log(`📊 Buscando ${tableName}: ${allData.length} itens carregados`);
+      console.log(`📊 Progresso ${tableName}: ${allData.length} itens carregados, restam ${data.response.remaining}`);
     }
     
+    console.log(`✅ Busca concluída para ${tableName}: ${allData.length} itens total`);
     return allData;
+    
   } catch (error) {
-    console.error(`❌ Erro ao buscar ${tableName}:`, error.message);
-    throw error;
+    console.error(`❌ Erro detalhado ao buscar ${tableName}:`);
+    console.error('- Mensagem:', error.message);
+    console.error('- Status:', error.response?.status);
+    console.error('- Dados:', error.response?.data);
+    console.error('- Headers:', error.response?.headers);
+    console.error('- Config:', {
+      url: `${BUBBLE_CONFIG.baseURL}/${tableName}`,
+      headers: BUBBLE_CONFIG.headers,
+      params: filters
+    });
+    
+    if (error.response?.status === 401) {
+      throw new Error(`Erro de autenticação: Token inválido ou expirado`);
+    } else if (error.response?.status === 404) {
+      throw new Error(`Tabela não encontrada: ${tableName}`);
+    } else if (error.response?.status === 429) {
+      throw new Error(`Muitas requisições: Rate limit excedido`);
+    } else {
+      throw new Error(`Erro ao buscar ${tableName}: ${error.message}`);
+    }
   }
 }
 
 // Função para criar item no Bubble
 async function createInBubble(tableName, data) {
   try {
+    console.log(`➕ Criando item em ${tableName}:`, data);
+    
     const response = await axios.post(`${BUBBLE_CONFIG.baseURL}/${tableName}`, data, {
-      headers: BUBBLE_CONFIG.headers
+      headers: BUBBLE_CONFIG.headers,
+      timeout: 30000
     });
+    
+    console.log(`✅ Item criado em ${tableName}:`, response.data);
     return response.data;
+    
   } catch (error) {
-    console.error(`❌ Erro ao criar em ${tableName}:`, error.message);
-    throw error;
+    console.error(`❌ Erro ao criar em ${tableName}:`);
+    console.error('- Dados enviados:', data);
+    console.error('- Mensagem:', error.message);
+    console.error('- Status:', error.response?.status);
+    console.error('- Resposta:', error.response?.data);
+    
+    if (error.response?.status === 400) {
+      throw new Error(`Dados inválidos para ${tableName}: ${error.response?.data?.body?.message || error.message}`);
+    } else if (error.response?.status === 401) {
+      throw new Error(`Erro de autenticação ao criar em ${tableName}`);
+    } else {
+      throw new Error(`Erro ao criar em ${tableName}: ${error.message}`);
+    }
   }
 }
 
 // Função para atualizar item no Bubble
 async function updateInBubble(tableName, itemId, data) {
   try {
+    console.log(`🔄 Atualizando item ${itemId} em ${tableName}:`, data);
+    
     const response = await axios.patch(`${BUBBLE_CONFIG.baseURL}/${tableName}/${itemId}`, data, {
-      headers: BUBBLE_CONFIG.headers
+      headers: BUBBLE_CONFIG.headers,
+      timeout: 30000
     });
+    
+    console.log(`✅ Item atualizado em ${tableName}:`, response.data);
     return response.data;
+    
   } catch (error) {
-    console.error(`❌ Erro ao atualizar ${tableName}/${itemId}:`, error.message);
-    throw error;
+    console.error(`❌ Erro ao atualizar ${tableName}/${itemId}:`);
+    console.error('- Dados enviados:', data);
+    console.error('- Mensagem:', error.message);
+    console.error('- Status:', error.response?.status);
+    console.error('- Resposta:', error.response?.data);
+    
+    if (error.response?.status === 400) {
+      throw new Error(`Dados inválidos para atualizar ${tableName}: ${error.response?.data?.body?.message || error.message}`);
+    } else if (error.response?.status === 401) {
+      throw new Error(`Erro de autenticação ao atualizar ${tableName}`);
+    } else if (error.response?.status === 404) {
+      throw new Error(`Item não encontrado: ${tableName}/${itemId}`);
+    } else {
+      throw new Error(`Erro ao atualizar ${tableName}: ${error.message}`);
+    }
   }
 }
 
@@ -544,6 +615,49 @@ app.get('/health', (req, res) => {
     message: 'API funcionando corretamente',
     timestamp: new Date().toISOString()
   });
+});
+
+// Rota para testar conectividade com Bubble
+app.get('/test-bubble', async (req, res) => {
+  try {
+    console.log('🧪 Testando conectividade com Bubble...');
+    
+    // Teste básico de conectividade
+    const testResponse = await axios.get(`${BUBBLE_CONFIG.baseURL}/1 - fornecedor_25marco`, {
+      headers: BUBBLE_CONFIG.headers,
+      params: { limit: 1 },
+      timeout: 10000
+    });
+    
+    console.log('✅ Conectividade OK:', testResponse.data);
+    
+    res.json({
+      success: true,
+      message: 'Conectividade com Bubble OK',
+      bubble_response: testResponse.data,
+      config: {
+        baseURL: BUBBLE_CONFIG.baseURL,
+        hasToken: !!BUBBLE_CONFIG.token
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Erro no teste de conectividade:', error.message);
+    
+    res.status(500).json({
+      success: false,
+      error: 'Erro de conectividade com Bubble',
+      details: {
+        message: error.message,
+        status: error.response?.status,
+        data: error.response?.data,
+        config: {
+          baseURL: BUBBLE_CONFIG.baseURL,
+          hasToken: !!BUBBLE_CONFIG.token
+        }
+      }
+    });
+  }
 });
 
 // Rota de documentação
