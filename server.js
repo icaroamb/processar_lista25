@@ -14,7 +14,7 @@ app.use(express.json());
 
 // Configurações do Bubble
 const BUBBLE_CONFIG = {
-  baseURL: 'https://calculaqui.com/version-test/api/1.1/obj',
+  baseURL: 'https://calculaqui.com/api/1.1/obj',
   token: '7c4a6a50a83c872a298b261126781a8f',
   headers: {
     'token': '7c4a6a50a83c872a298b261126781a8f',
