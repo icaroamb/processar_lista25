@@ -91,140 +91,73 @@ function parseCSVLine(line) {
 // Função para buscar dados do Bubble com paginação
 async function fetchAllFromBubble(tableName, filters = {}) {
   try {
-    console.log(`🔍 Iniciando busca em ${tableName}...`);
+    console.log(`🔍 Buscando dados de ${tableName}...`);
     let allData = [];
     let cursor = 0;
     let hasMore = true;
     
     while (hasMore) {
-      const params = {
-        cursor,
-        limit: 100,
-        ...filters
-      };
-      
-      console.log(`📡 Requisição para ${tableName}: cursor=${cursor}, filtros=${JSON.stringify(filters)}`);
+      const params = { cursor, limit: 100, ...filters };
       
       const response = await axios.get(`${BUBBLE_CONFIG.baseURL}/${tableName}`, {
         headers: BUBBLE_CONFIG.headers,
         params,
-        timeout: 30000 // 30 segundos de timeout
+        timeout: 30000
       });
       
       const data = response.data;
-      console.log(`📊 Resposta recebida para ${tableName}:`, {
-        results: data.response?.results?.length || 0,
-        remaining: data.response?.remaining || 0,
-        cursor: data.response?.cursor || 0
-      });
       
       if (!data.response || !data.response.results) {
-        console.error(`❌ Estrutura de resposta inválida para ${tableName}:`, data);
         throw new Error(`Estrutura de resposta inválida para ${tableName}`);
       }
       
       allData = allData.concat(data.response.results);
-      
       hasMore = data.response.remaining > 0;
       cursor = data.response.cursor || (cursor + 100);
-      
-      console.log(`📊 Progresso ${tableName}: ${allData.length} itens carregados, restam ${data.response.remaining}`);
     }
     
-    console.log(`✅ Busca concluída para ${tableName}: ${allData.length} itens total`);
+    console.log(`✅ ${tableName}: ${allData.length} registros carregados`);
     return allData;
     
   } catch (error) {
-    console.error(`❌ Erro detalhado ao buscar ${tableName}:`);
-    console.error('- Mensagem:', error.message);
-    console.error('- Status:', error.response?.status);
-    console.error('- Dados:', error.response?.data);
-    console.error('- Headers:', error.response?.headers);
-    console.error('- Config:', {
-      url: `${BUBBLE_CONFIG.baseURL}/${tableName}`,
-      headers: BUBBLE_CONFIG.headers,
-      params: filters
-    });
-    
-    if (error.response?.status === 401) {
-      throw new Error(`Erro de autenticação: Token inválido ou expirado`);
-    } else if (error.response?.status === 404) {
-      throw new Error(`Tabela não encontrada: ${tableName}`);
-    } else if (error.response?.status === 429) {
-      throw new Error(`Muitas requisições: Rate limit excedido`);
-    } else {
-      throw new Error(`Erro ao buscar ${tableName}: ${error.message}`);
-    }
+    console.error(`❌ Erro ao buscar ${tableName}:`, error.message);
+    throw new Error(`Erro ao buscar ${tableName}: ${error.message}`);
   }
 }
 
 // Função para criar item no Bubble
 async function createInBubble(tableName, data) {
   try {
-    console.log(`➕ Criando item em ${tableName}:`, data);
-    
     const response = await axios.post(`${BUBBLE_CONFIG.baseURL}/${tableName}`, data, {
       headers: BUBBLE_CONFIG.headers,
       timeout: 30000
     });
-    
-    console.log(`✅ Item criado em ${tableName}:`, response.data);
     return response.data;
-    
   } catch (error) {
-    console.error(`❌ Erro ao criar em ${tableName}:`);
-    console.error('- Dados enviados:', data);
-    console.error('- Mensagem:', error.message);
-    console.error('- Status:', error.response?.status);
-    console.error('- Resposta:', error.response?.data);
-    
-    if (error.response?.status === 400) {
-      throw new Error(`Dados inválidos para ${tableName}: ${error.response?.data?.body?.message || error.message}`);
-    } else if (error.response?.status === 401) {
-      throw new Error(`Erro de autenticação ao criar em ${tableName}`);
-    } else {
-      throw new Error(`Erro ao criar em ${tableName}: ${error.message}`);
-    }
+    console.error(`❌ Erro ao criar em ${tableName}:`, error.response?.data || error.message);
+    throw new Error(`Erro ao criar em ${tableName}: ${error.response?.data?.body?.message || error.message}`);
   }
 }
 
 // Função para atualizar item no Bubble
 async function updateInBubble(tableName, itemId, data) {
   try {
-    console.log(`🔄 Atualizando item ${itemId} em ${tableName}:`, data);
-    
     const response = await axios.patch(`${BUBBLE_CONFIG.baseURL}/${tableName}/${itemId}`, data, {
       headers: BUBBLE_CONFIG.headers,
       timeout: 30000
     });
-    
-    console.log(`✅ Item atualizado em ${tableName}:`, response.data);
     return response.data;
-    
   } catch (error) {
-    console.error(`❌ Erro ao atualizar ${tableName}/${itemId}:`);
-    console.error('- Dados enviados:', data);
-    console.error('- Mensagem:', error.message);
-    console.error('- Status:', error.response?.status);
-    console.error('- Resposta:', error.response?.data);
-    
-    if (error.response?.status === 400) {
-      throw new Error(`Dados inválidos para atualizar ${tableName}: ${error.response?.data?.body?.message || error.message}`);
-    } else if (error.response?.status === 401) {
-      throw new Error(`Erro de autenticação ao atualizar ${tableName}`);
-    } else if (error.response?.status === 404) {
-      throw new Error(`Item não encontrado: ${tableName}/${itemId}`);
-    } else {
-      throw new Error(`Erro ao atualizar ${tableName}: ${error.message}`);
-    }
+    console.error(`❌ Erro ao atualizar ${tableName}/${itemId}:`, error.response?.data || error.message);
+    throw new Error(`Erro ao atualizar ${tableName}: ${error.response?.data?.body?.message || error.message}`);
   }
 }
 
-// Função para calcular estatísticas do produto
+// Função para calcular estatísticas do produto baseadas no preco_final
 function calculateProductStats(produtoFornecedores) {
   const validPrices = produtoFornecedores
-    .filter(pf => pf.preco_final && pf.preco_final > 0)  // ← Mudança aqui: preco_final
-    .map(pf => pf.preco_final);  // ← Mudança aqui: preco_final
+    .filter(pf => pf.preco_final && pf.preco_final > 0)
+    .map(pf => pf.preco_final);
   
   const qtd_fornecedores = validPrices.length;
   const menor_preco = qtd_fornecedores > 0 ? Math.min(...validPrices) : 0;
@@ -233,51 +166,125 @@ function calculateProductStats(produtoFornecedores) {
   return { qtd_fornecedores, menor_preco, preco_medio };
 }
 
-// Função para sincronizar com o Bubble
+// Função para processar o CSV
+function processCSV(filePath) {
+  return new Promise((resolve, reject) => {
+    try {
+      console.log('📁 Lendo arquivo CSV...');
+      
+      const fileContent = fs.readFileSync(filePath, 'utf8');
+      const lines = fileContent.split('\n').filter(line => line.trim());
+      
+      if (lines.length < 3) {
+        console.log('❌ Arquivo CSV muito pequeno');
+        return resolve([]);
+      }
+      
+      // Pular as duas primeiras linhas (cabeçalhos)
+      const dataLines = lines.slice(2);
+      console.log(`📊 Processando ${dataLines.length} linhas de dados`);
+      
+      // Configuração das lojas com índices das colunas
+      const lojasConfig = [
+        { nome: 'Loja da Suzy', indices: [0, 1, 2] },
+        { nome: 'Loja Top Celulares', indices: [4, 5, 6] },
+        { nome: 'Loja HUSSEIN', indices: [8, 9, 10] },
+        { nome: 'Loja Paulo', indices: [12, 13, 14] },
+        { nome: 'Loja HM', indices: [16, 17, 18] },
+        { nome: 'Loja General', indices: [20, 21, 22] },
+        { nome: 'Loja JR', indices: [24, 25, 26] },
+        { nome: 'Loja Mega Cell', indices: [28, 29, 30] }
+      ];
+      
+      const processedData = [];
+      
+      lojasConfig.forEach((lojaConfig) => {
+        console.log(`🏪 Processando ${lojaConfig.nome}...`);
+        const produtos = [];
+        
+        dataLines.forEach((line) => {
+          if (!line || line.trim() === '') return;
+          
+          const columns = parseCSVLine(line);
+          
+          if (columns.length < 31) return;
+          
+          const codigo = columns[lojaConfig.indices[0]];
+          const modelo = columns[lojaConfig.indices[1]];
+          const preco = columns[lojaConfig.indices[2]];
+          
+          if (codigo && modelo && preco && 
+              codigo.trim() !== '' && 
+              modelo.trim() !== '' && 
+              preco.trim() !== '') {
+            
+            const precoNumerico = extractPrice(preco);
+            
+            produtos.push({
+              codigo: codigo.trim(),
+              modelo: modelo.trim(),
+              preco: precoNumerico
+            });
+          }
+        });
+        
+        console.log(`✅ ${lojaConfig.nome}: ${produtos.length} produtos`);
+        
+        if (produtos.length > 0) {
+          processedData.push({
+            loja: lojaConfig.nome,
+            total_produtos: produtos.length,
+            produtos: produtos
+          });
+        }
+      });
+      
+      resolve(processedData);
+      
+    } catch (error) {
+      console.error('❌ Erro no processamento do CSV:', error);
+      reject(error);
+    }
+  });
+}
+
+// Função principal para sincronizar com o Bubble
 async function syncWithBubble(csvData, gorduraValor) {
   try {
     console.log('\n🔄 Iniciando sincronização com Bubble...');
     
-    // Buscar dados existentes do Bubble
-    console.log('📊 Buscando dados existentes...');
+    // 1. CARREGAR DADOS EXISTENTES
+    console.log('📊 Carregando dados existentes...');
     const [fornecedores, produtos, produtoFornecedores] = await Promise.all([
       fetchAllFromBubble('1 - fornecedor_25marco'),
       fetchAllFromBubble('1 - produtos_25marco'),
       fetchAllFromBubble('1 - ProdutoFornecedor _25marco')
     ]);
     
-    console.log(`📊 Dados carregados: ${fornecedores.length} fornecedores, ${produtos.length} produtos, ${produtoFornecedores.length} relações`);
+    console.log(`📊 Carregados: ${fornecedores.length} fornecedores, ${produtos.length} produtos, ${produtoFornecedores.length} relações`);
     
-    // Criar mapas para busca rápida
+    // 2. CRIAR MAPAS PARA BUSCA RÁPIDA
     const fornecedorMap = new Map();
-    fornecedores.forEach(f => {
-      fornecedorMap.set(f.nome_fornecedor, f);
-    });
+    fornecedores.forEach(f => fornecedorMap.set(f.nome_fornecedor, f));
     
     const produtoMap = new Map();
-    produtos.forEach(p => {
-      produtoMap.set(p.id_planilha, p);
-    });
+    produtos.forEach(p => produtoMap.set(p.id_planilha, p));
     
-    const produtoFornecedorMap = new Map();
-    produtoFornecedores.forEach(pf => {
-      const key = `${pf.produto}_${pf.fornecedor}`;
-      produtoFornecedorMap.set(key, pf);
-    });
-    
-    // Processar cada loja
     const results = {
       fornecedores_criados: 0,
       produtos_criados: 0,
-      produtos_atualizados: 0,
       relacoes_criadas: 0,
-      relacoes_atualizadas: 0
+      relacoes_atualizadas: 0,
+      relacoes_zeradas: 0
     };
+    
+    // 3. PROCESSAR PRODUTOS DO CSV
+    console.log('\n📝 Processando produtos do CSV...');
     
     for (const lojaData of csvData) {
       console.log(`\n🏪 Processando ${lojaData.loja}...`);
       
-      // Verificar/criar fornecedor
+      // 3.1 Verificar/criar fornecedor
       let fornecedor = fornecedorMap.get(lojaData.loja);
       if (!fornecedor) {
         console.log(`➕ Criando fornecedor: ${lojaData.loja}`);
@@ -290,7 +297,7 @@ async function syncWithBubble(csvData, gorduraValor) {
         results.fornecedores_criados++;
       }
       
-      // Processar produtos da loja
+      // 3.2 Processar cada produto da loja
       for (const produtoCsv of lojaData.produtos) {
         // Verificar/criar produto
         let produto = produtoMap.get(produtoCsv.codigo);
@@ -312,15 +319,17 @@ async function syncWithBubble(csvData, gorduraValor) {
           results.produtos_criados++;
         }
         
-        // Verificar/criar/atualizar relação ProdutoFornecedor
-        const relacaoKey = `${produto._id}_${fornecedor._id}`;
-        let relacao = produtoFornecedorMap.get(relacaoKey);
-        
+        // Calcular preços
         const precoOriginal = produtoCsv.preco;
         const precoFinal = precoOriginal === 0 ? 0 : precoOriginal + gorduraValor;
         const precoOrdenacao = precoOriginal === 0 ? 999999 : precoOriginal;
         
-        if (!relacao) {
+        // Verificar/criar/atualizar relação ProdutoFornecedor
+        const relacaoExistente = produtoFornecedores.find(pf => 
+          pf.produto === produto._id && pf.fornecedor === fornecedor._id
+        );
+        
+        if (!relacaoExistente) {
           console.log(`➕ Criando relação: ${produtoCsv.codigo} - ${lojaData.loja}`);
           await createInBubble('1 - ProdutoFornecedor _25marco', {
             produto: produto._id,
@@ -329,13 +338,13 @@ async function syncWithBubble(csvData, gorduraValor) {
             preco_original: precoOriginal,
             preco_final: precoFinal,
             preco_ordenacao: precoOrdenacao,
-            // melhor_preco: false,  // ← COMENTADO TEMPORARIAMENTE
+            melhor_preco: false,
             status_ativo: 'yes'
           });
           results.relacoes_criadas++;
-        } else if (relacao.preco_original !== precoOriginal) {
+        } else if (relacaoExistente.preco_original !== precoOriginal) {
           console.log(`🔄 Atualizando relação: ${produtoCsv.codigo} - ${lojaData.loja}`);
-          await updateInBubble('1 - ProdutoFornecedor _25marco', relacao._id, {
+          await updateInBubble('1 - ProdutoFornecedor _25marco', relacaoExistente._id, {
             preco_original: precoOriginal,
             preco_final: precoFinal,
             preco_ordenacao: precoOrdenacao
@@ -345,13 +354,58 @@ async function syncWithBubble(csvData, gorduraValor) {
       }
     }
     
-    // Atualizar estatísticas dos produtos e melhor_preco
-    console.log('\n📊 Atualizando estatísticas dos produtos...');
-    const produtosAtualizados = await fetchAllFromBubble('1 - ProdutoFornecedor _25marco');
+    // 4. ZERAR PRODUTOS NÃO COTADOS (COTAÇÃO DIÁRIA)
+    console.log('\n🧹 Aplicando lógica de cotação diária...');
+    
+    for (const lojaData of csvData) {
+      const fornecedor = fornecedorMap.get(lojaData.loja);
+      if (!fornecedor) continue;
+      
+      console.log(`🔍 Verificando produtos ausentes para: ${lojaData.loja}`);
+      
+      // Criar Set dos códigos cotados hoje
+      const codigosCotadosHoje = new Set();
+      lojaData.produtos.forEach(produto => {
+        codigosCotadosHoje.add(produto.codigo);
+      });
+      
+      console.log(`📋 Produtos cotados hoje: [${Array.from(codigosCotadosHoje).join(', ')}]`);
+      
+      // Buscar todas as relações existentes deste fornecedor
+      const relacoesExistentes = produtoFornecedores.filter(pf => pf.fornecedor === fornecedor._id);
+      
+      for (const relacao of relacoesExistentes) {
+        const produto = produtos.find(p => p._id === relacao.produto);
+        if (!produto) continue;
+        
+        const codigoProduto = produto.id_planilha;
+        const foiCotadoHoje = codigosCotadosHoje.has(codigoProduto);
+        const temPreco = relacao.preco_original > 0;
+        
+        // Se produto NÃO foi cotado hoje MAS tinha preço, zerar
+        if (!foiCotadoHoje && temPreco) {
+          console.log(`🧹 Zerando produto ausente: ${codigoProduto} - ${lojaData.loja}`);
+          
+          await updateInBubble('1 - ProdutoFornecedor _25marco', relacao._id, {
+            preco_original: 0,
+            preco_final: 0,
+            preco_ordenacao: 999999
+          });
+          
+          results.relacoes_zeradas++;
+        }
+      }
+    }
+    
+    // 5. RECALCULAR ESTATÍSTICAS DOS PRODUTOS
+    console.log('\n📊 Recalculando estatísticas dos produtos...');
+    
+    // Recarregar dados atualizados
+    const produtoFornecedoresAtualizados = await fetchAllFromBubble('1 - ProdutoFornecedor _25marco');
     
     // Agrupar por produto
     const produtoStats = new Map();
-    produtosAtualizados.forEach(pf => {
+    produtoFornecedoresAtualizados.forEach(pf => {
       if (!produtoStats.has(pf.produto)) {
         produtoStats.set(pf.produto, []);
       }
@@ -362,25 +416,22 @@ async function syncWithBubble(csvData, gorduraValor) {
     for (const [produtoId, relacoes] of produtoStats) {
       const stats = calculateProductStats(relacoes);
       
-      // Atualizar produto
+      // Atualizar estatísticas do produto
       await updateInBubble('1 - produtos_25marco', produtoId, {
         qtd_fornecedores: stats.qtd_fornecedores,
         menor_preco: stats.menor_preco,
         preco_medio: stats.preco_medio
       });
       
-      // Atualizar melhor_preco nas relações
-      // TEMPORARIAMENTE COMENTADO - verificar nome do campo no Bubble
-      /*
+      // Atualizar melhor_preco nas relações (baseado no preco_final)
       for (const relacao of relacoes) {
-        const isMelhorPreco = relacao.preco_original === stats.menor_preco && relacao.preco_original > 0;
+        const isMelhorPreco = relacao.preco_final === stats.menor_preco && relacao.preco_final > 0;
         if (relacao.melhor_preco !== isMelhorPreco) {
           await updateInBubble('1 - ProdutoFornecedor _25marco', relacao._id, {
             melhor_preco: isMelhorPreco
           });
         }
       }
-      */
     }
     
     console.log('\n✅ Sincronização concluída!');
@@ -394,101 +445,15 @@ async function syncWithBubble(csvData, gorduraValor) {
   }
 }
 
-// Função para processar o CSV
-function processCSV(filePath) {
-  return new Promise((resolve, reject) => {
-    try {
-      console.log('📁 Lendo arquivo:', filePath);
-      
-      const fileContent = fs.readFileSync(filePath, 'utf8');
-      console.log('📄 Arquivo lido, tamanho:', fileContent.length, 'caracteres');
-      
-      const lines = fileContent.split('\n').filter(line => line.trim());
-      console.log('📋 Total de linhas:', lines.length);
-      
-      if (lines.length < 3) {
-        console.log('❌ Arquivo muito pequeno');
-        return resolve([]);
-      }
-      
-      // Pular as duas primeiras linhas (cabeçalhos)
-      const dataLines = lines.slice(2);
-      console.log('📊 Linhas de dados:', dataLines.length);
-      
-      const lojasConfig = [
-        { nome: 'Loja da Suzy', indices: [0, 1, 2] },
-        { nome: 'Loja Top Celulares', indices: [4, 5, 6] },
-        { nome: 'Loja HUSSEIN', indices: [8, 9, 10] },
-        { nome: 'Loja Paulo', indices: [12, 13, 14] },
-        { nome: 'Loja HM', indices: [16, 17, 18] },
-        { nome: 'Loja General', indices: [20, 21, 22] },
-        { nome: 'Loja JR', indices: [24, 25, 26] },
-        { nome: 'Loja Mega Cell', indices: [28, 29, 30] }
-      ];
-      
-      const processedData = [];
-      
-      lojasConfig.forEach((lojaConfig) => {
-        console.log(`\n🏪 Processando ${lojaConfig.nome}...`);
-        const produtos = [];
-        
-        dataLines.forEach((line, lineIndex) => {
-          if (!line || line.trim() === '') return;
-          
-          const columns = parseCSVLine(line);
-          
-          if (columns.length < 31) {
-            console.log(`⚠️  Linha ${lineIndex + 3} muito curta: ${columns.length} colunas`);
-            return;
-          }
-          
-          const codigo = columns[lojaConfig.indices[0]];
-          const modelo = columns[lojaConfig.indices[1]];
-          const preco = columns[lojaConfig.indices[2]];
-          
-          if (codigo && modelo && preco && 
-              codigo.trim() !== '' && 
-              modelo.trim() !== '' && 
-              preco.trim() !== '') {
-            
-            const precoNumerico = extractPrice(preco);
-            
-            produtos.push({
-              codigo: codigo.trim(),
-              modelo: modelo.trim(),
-              preco: precoNumerico
-            });
-          }
-        });
-        
-        console.log(`✅ ${lojaConfig.nome}: ${produtos.length} produtos encontrados`);
-        
-        if (produtos.length > 0) {
-          processedData.push({
-            loja: lojaConfig.nome,
-            total_produtos: produtos.length,
-            produtos: produtos
-          });
-        }
-      });
-      
-      resolve(processedData);
-      
-    } catch (error) {
-      console.error('❌ ERRO no processamento:', error);
-      reject(error);
-    }
-  });
-}
+// ROTAS DA API
 
 // Rota principal para upload e processamento
 app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
   try {
     console.log('\n🚀 === NOVA REQUISIÇÃO ===');
-    console.log('📤 Arquivo recebido:', req.file ? req.file.originalname : 'Nenhum');
+    console.log('📤 Arquivo:', req.file ? req.file.originalname : 'Nenhum');
     
     if (!req.file) {
-      console.log('❌ Nenhum arquivo enviado');
       return res.status(400).json({ 
         error: 'Nenhum arquivo CSV foi enviado' 
       });
@@ -505,10 +470,8 @@ app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
     console.log('💰 Gordura valor:', gorduraValor);
     
     const filePath = req.file.path;
-    console.log('📁 Caminho do arquivo:', filePath);
     
     if (!fs.existsSync(filePath)) {
-      console.log('❌ Arquivo não encontrado');
       return res.status(400).json({ 
         error: 'Arquivo não encontrado' 
       });
@@ -522,11 +485,11 @@ app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
     
     // Limpar arquivo temporário
     fs.unlinkSync(filePath);
-    console.log('🗑️  Arquivo temporário removido');
+    console.log('🗑️ Arquivo temporário removido');
     
-    console.log('✅ Processamento concluído');
+    console.log('✅ Processamento concluído com sucesso');
     
-    // Retornar dados processados
+    // Retornar resultado
     res.json({
       success: true,
       message: 'CSV processado e sincronizado com sucesso',
@@ -625,14 +588,11 @@ app.get('/test-bubble', async (req, res) => {
   try {
     console.log('🧪 Testando conectividade com Bubble...');
     
-    // Teste básico de conectividade
     const testResponse = await axios.get(`${BUBBLE_CONFIG.baseURL}/1 - fornecedor_25marco`, {
       headers: BUBBLE_CONFIG.headers,
       params: { limit: 1 },
       timeout: 10000
     });
-    
-    console.log('✅ Conectividade OK:', testResponse.data);
     
     res.json({
       success: true,
@@ -645,19 +605,13 @@ app.get('/test-bubble', async (req, res) => {
     });
     
   } catch (error) {
-    console.error('❌ Erro no teste de conectividade:', error.message);
-    
     res.status(500).json({
       success: false,
       error: 'Erro de conectividade com Bubble',
       details: {
         message: error.message,
         status: error.response?.status,
-        data: error.response?.data,
-        config: {
-          baseURL: BUBBLE_CONFIG.baseURL,
-          hasToken: !!BUBBLE_CONFIG.token
-        }
+        data: error.response?.data
       }
     });
   }
@@ -667,16 +621,24 @@ app.get('/test-bubble', async (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     message: 'API para processamento de CSV de produtos com integração Bubble',
-    version: '2.0.0',
+    version: '3.0.0',
     endpoints: {
       'POST /process-csv': 'Envia arquivo CSV com parâmetro gordura_valor e sincroniza com Bubble',
       'GET /stats': 'Retorna estatísticas das tabelas',
       'GET /produto/:codigo': 'Busca produto específico por código',
-      'GET /health': 'Verifica status da API'
+      'GET /health': 'Verifica status da API',
+      'GET /test-bubble': 'Testa conectividade com Bubble'
     },
     parametros_obrigatorios: {
       'gordura_valor': 'number - Valor a ser adicionado ao preço original'
-    }
+    },
+    funcionalidades: [
+      'Processamento de CSV com layout horizontal',
+      'Cotação diária completa (zera produtos não cotados)',
+      'Cálculos baseados no preço final (com margem)',
+      'Identificação automática do melhor preço',
+      'Sincronização inteligente com Bubble'
+    ]
   });
 });
 
@@ -707,7 +669,7 @@ app.listen(PORT, () => {
   console.log(`🚀 Servidor rodando na porta ${PORT}`);
   console.log(`📊 Acesse: http://localhost:${PORT}`);
   console.log(`🔗 Integração Bubble configurada`);
+  console.log(`✨ Versão 3.0.0 - Código reescrito do zero`);
 });
 
-module.exports = app; 
-
+module.exports = app;
