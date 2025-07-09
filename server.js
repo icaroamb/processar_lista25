@@ -223,8 +223,8 @@ async function updateInBubble(tableName, itemId, data) {
 // Função para calcular estatísticas do produto
 function calculateProductStats(produtoFornecedores) {
   const validPrices = produtoFornecedores
-    .filter(pf => pf.preco_original && pf.preco_original > 0)
-    .map(pf => pf.preco_original);
+    .filter(pf => pf.preco_final && pf.preco_final > 0)  // ← Mudança aqui: preco_final
+    .map(pf => pf.preco_final);  // ← Mudança aqui: preco_final
   
   const qtd_fornecedores = validPrices.length;
   const menor_preco = qtd_fornecedores > 0 ? Math.min(...validPrices) : 0;
@@ -329,7 +329,7 @@ async function syncWithBubble(csvData, gorduraValor) {
             preco_original: precoOriginal,
             preco_final: precoFinal,
             preco_ordenacao: precoOrdenacao,
-            melhor_preco: false,
+            // melhor_preco: false,  // ← COMENTADO TEMPORARIAMENTE
             status_ativo: 'yes'
           });
           results.relacoes_criadas++;
@@ -370,6 +370,8 @@ async function syncWithBubble(csvData, gorduraValor) {
       });
       
       // Atualizar melhor_preco nas relações
+      // TEMPORARIAMENTE COMENTADO - verificar nome do campo no Bubble
+      /*
       for (const relacao of relacoes) {
         const isMelhorPreco = relacao.preco_original === stats.menor_preco && relacao.preco_original > 0;
         if (relacao.melhor_preco !== isMelhorPreco) {
@@ -378,6 +380,7 @@ async function syncWithBubble(csvData, gorduraValor) {
           });
         }
       }
+      */
     }
     
     console.log('\n✅ Sincronização concluída!');
