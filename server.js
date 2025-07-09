@@ -1,6 +1,5 @@
 const express = require('express');
 const multer = require('multer');
-const csv = require('csv-parser');
 const fs = require('fs');
 const path = require('path');
 const cors = require('cors');
@@ -56,89 +55,118 @@ function extractPrice(priceString) {
   return isNaN(price) ? 0 : price;
 }
 
-// Função para processar o CSV
+// Função para processar o CSV com parser manual
 function processCSV(filePath) {
   return new Promise((resolve, reject) => {
-    const results = [];
-    
-    fs.createReadStream(filePath)
-      .pipe(csv())
-      .on('data', (row) => {
-        results.push(row);
-      })
-      .on('end', () => {
-        try {
-          // Configuração das lojas e suas colunas
-          const lojasConfig = [
-            { nome: 'Loja da Suzy', colunas: ['Loja da Suzy', '', '_1'] },
-            { nome: 'Loja Top Celulares', colunas: ['Loja Top Celulares', '_3', '_4'] },
-            { nome: 'Loja HUSSEIN', colunas: ['Loja HUSSEIN', '_6', '_7'] },
-            { nome: 'Loja Paulo', colunas: ['Loja Paulo', '_9', '_10'] },
-            { nome: 'Loja HM', colunas: ['Loja HM', '_12', '_13'] },
-            { nome: 'Loja General', colunas: ['Loja General', '_15', '_16'] },
-            { nome: 'Loja JR', colunas: ['Loja JR', '_18', '_19'] },
-            { nome: 'Loja Mega Cell', colunas: ['Loja Mega Cell', '_21', '_22'] }
-          ];
+    try {
+      // Ler arquivo como texto
+      const fileContent = fs.readFileSync(filePath, 'utf8');
+      
+      // Dividir em linhas
+      const lines = fileContent.split('\n').filter(line => line.trim());
+      
+      console.log('🔍 DEBUG: Total de linhas:', lines.length);
+      console.log('🔍 DEBUG: Primeira linha:', lines[0]);
+      console.log('🔍 DEBUG: Segunda linha:', lines[1]);
+      
+      if (lines.length < 2) {
+        return resolve([]);
+      }
+      
+      // Processar cabeçalho
+      const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
+      console.log('🔍 DEBUG: Cabeçalhos:', headers);
+      
+      // Configuração das lojas baseada nos cabeçalhos
+      const lojasConfig = [
+        { nome: 'Loja da Suzy', indices: [0, 1, 2] },
+        { nome: 'Loja Top Celulares', indices: [4, 5, 6] },
+        { nome: 'Loja HUSSEIN', indices: [8, 9, 10] },
+        { nome: 'Loja Paulo', indices: [12, 13, 14] },
+        { nome: 'Loja HM', indices: [16, 17, 18] },
+        { nome: 'Loja General', indices: [20, 21, 22] },
+        { nome: 'Loja JR', indices: [24, 25, 26] },
+        { nome: 'Loja Mega Cell', indices: [28, 29, 30] }
+      ];
+      
+      const processedData = [];
+      
+      // Processar cada loja
+      lojasConfig.forEach((lojaConfig, lojaIndex) => {
+        console.log(`\n🔍 DEBUG: Processando ${lojaConfig.nome}...`);
+        const produtos = [];
+        
+        // Processar linhas de dados (pular cabeçalho)
+        for (let i = 1; i < lines.length; i++) {
+          const line = lines[i];
+          if (!line || line.trim() === '') continue;
           
-          const processedData = [];
+          // Dividir linha em colunas
+          const columns = line.split(',').map(col => col.trim().replace(/"/g, ''));
           
-          // Processar cada loja
-          lojasConfig.forEach((lojaConfig) => {
-            const produtos = [];
+          if (columns.length < 30) continue; // Linha incompleta
+          
+          const codigo = columns[lojaConfig.indices[0]];
+          const modelo = columns[lojaConfig.indices[1]];
+          const preco = columns[lojaConfig.indices[2]];
+          
+          // Debug para primeira loja nas primeiras linhas
+          if (lojaIndex === 0 && i <= 5) {
+            console.log(`🔍 DEBUG: Linha ${i}:`, {
+              codigo: codigo,
+              modelo: modelo,
+              preco: preco
+            });
+          }
+          
+          // Pular linha de cabeçalho
+          if (codigo === 'Código' || !codigo) continue;
+          
+          // Adicionar produto se tiver dados válidos
+          if (codigo && modelo && preco && 
+              codigo.toString().trim() !== '' && 
+              modelo.toString().trim() !== '' && 
+              preco.toString().trim() !== '') {
             
-            // Processar todas as linhas (pular apenas se for cabeçalho)
-            for (let i = 0; i < results.length; i++) {
-              const row = results[i];
-              
-              const codigo = row[lojaConfig.colunas[0]];
-              const modelo = row[lojaConfig.colunas[1]];
-              const preco = row[lojaConfig.colunas[2]];
-              
-              // Pular linha de cabeçalho
-              if (codigo === 'Código' || !codigo) continue;
-              
-              // Adicionar produto se tiver dados válidos
-              if (codigo && modelo && preco && 
-                  codigo.toString().trim() !== '' && 
-                  modelo.toString().trim() !== '' && 
-                  preco.toString().trim() !== '') {
-                
-                const precoNumerico = extractPrice(preco);
-                
-                if (precoNumerico > 0) {
-                  produtos.push({
-                    codigo: codigo.toString().trim(),
-                    modelo: modelo.toString().trim(),
-                    preco: precoNumerico
-                  });
-                }
-              }
-            }
+            const precoNumerico = extractPrice(preco);
             
-            // Adicionar loja aos dados processados
-            if (produtos.length > 0) {
-              processedData.push({
-                loja: lojaConfig.nome,
-                total_produtos: produtos.length,
-                produtos: produtos
+            if (precoNumerico > 0) {
+              produtos.push({
+                codigo: codigo.toString().trim(),
+                modelo: modelo.toString().trim(),
+                preco: precoNumerico
               });
             }
-          });
-          
-          resolve(processedData);
-        } catch (error) {
-          reject(error);
+          }
         }
-      })
-      .on('error', (error) => {
-        reject(error);
+        
+        console.log(`🔍 DEBUG: ${lojaConfig.nome} - ${produtos.length} produtos encontrados`);
+        
+        // Adicionar loja aos dados processados
+        if (produtos.length > 0) {
+          processedData.push({
+            loja: lojaConfig.nome,
+            total_produtos: produtos.length,
+            produtos: produtos
+          });
+        }
       });
+      
+      console.log('🔍 DEBUG: Total de lojas processadas:', processedData.length);
+      resolve(processedData);
+      
+    } catch (error) {
+      console.error('❌ ERRO no processamento:', error);
+      reject(error);
+    }
   });
 }
 
 // Rota principal para upload e processamento
 app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
   try {
+    console.log('📤 Recebido arquivo:', req.file ? req.file.originalname : 'Nenhum');
+    
     if (!req.file) {
       return res.status(400).json({ 
         error: 'Nenhum arquivo CSV foi enviado' 
@@ -146,6 +174,7 @@ app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
     }
     
     const filePath = req.file.path;
+    console.log('📁 Processando arquivo:', filePath);
     
     // Processar o CSV
     const processedData = await processCSV(filePath);
@@ -153,11 +182,13 @@ app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
     // Limpar arquivo temporário
     fs.unlinkSync(filePath);
     
+    console.log('✅ Processamento concluído. Dados retornados:', processedData.length, 'lojas');
+    
     // Retornar dados processados
     res.json(processedData);
     
   } catch (error) {
-    console.error('Erro ao processar CSV:', error);
+    console.error('❌ Erro ao processar CSV:', error);
     
     // Limpar arquivo se existir
     if (req.file && fs.existsSync(req.file.path)) {
