@@ -226,179 +226,141 @@ async function updateInBubble(tableName, itemId, data) {
   });
 }
 
-// Função para recalcular estatísticas seguindo a nova lógica específica
-async function recalculateStatsNewLogic() {
+// Função SUPER SIMPLES para recalcular estatísticas - SEM COMPLICAÇÕES
+async function recalculateStatsSIMPLE() {
   try {
-    console.log('\n🔥 INICIANDO RECÁLCULO COM NOVA LÓGICA...');
+    console.log('\n🚀 RECÁLCULO SUPER SIMPLES INICIADO...');
     
-    // 1. Buscar TODAS as relações da tabela ProdutoFornecedor
-    console.log('📊 Buscando todas as relações ProdutoFornecedor...');
+    // 1. Buscar TODAS as relações - SEM FILTROS
+    console.log('📊 Buscando TODAS as relações...');
     const todasRelacoes = await fetchAllFromBubble('1 - ProdutoFornecedor _25marco');
-    console.log(`📊 Total de relações encontradas: ${todasRelacoes.length}`);
+    console.log(`📊 TOTAL de relações: ${todasRelacoes.length}`);
     
-    // 2. Agrupar por campo "produto" (que corresponde ao _id da tabela produtos)
-    // Filtrar apenas relações com preco_final válido (não 0 e não vazio)
-    console.log('📊 Agrupando por produto e filtrando preços válidos...');
-    const gruposPorProduto = new Map();
+    // 2. Agrupar por produto de forma SUPER SIMPLES
+    console.log('📊 Agrupando por produto...');
+    const grupos = {};
     
     todasRelacoes.forEach(relacao => {
-      // Verificar se preco_final é válido
+      // Só considerar se tem preco_final válido
       if (relacao.preco_final && relacao.preco_final > 0) {
-        if (!gruposPorProduto.has(relacao.produto)) {
-          gruposPorProduto.set(relacao.produto, []);
+        const produtoId = relacao.produto;
+        
+        if (!grupos[produtoId]) {
+          grupos[produtoId] = [];
         }
-        gruposPorProduto.get(relacao.produto).push(relacao);
+        
+        grupos[produtoId].push(relacao);
       }
     });
     
-    console.log(`📊 Produtos agrupados: ${gruposPorProduto.size}`);
+    const produtoIds = Object.keys(grupos);
+    console.log(`📊 Produtos com preços válidos: ${produtoIds.length}`);
     
-    // 3. Preparar operações para atualização dos produtos
-    const operacoesProdutos = [];
-    const operacoesRelacoes = [];
+    let contadorProdutos = 0;
+    let contadorRelacoes = 0;
     
-    for (const [produtoId, relacoes] of gruposPorProduto) {
-      console.log(`\n📦 Processando produto ID: ${produtoId} com ${relacoes.length} relações`);
+    // 3. Para CADA produto, calcular e ATUALIZAR IMEDIATAMENTE
+    for (const produtoId of produtoIds) {
+      const relacoesDoProduto = grupos[produtoId];
       
-      // Extrair todos os precos_final válidos
-      const precosValidos = relacoes.map(r => r.preco_final);
-      console.log(`💰 Preços válidos: [${precosValidos.join(', ')}]`);
+      console.log(`\n📦 Produto ${produtoId}: ${relacoesDoProduto.length} relações`);
       
-      // Calcular estatísticas conforme especificado
-      const qtd_fornecedores = relacoes.length;
-      const menor_preco = Math.min(...precosValidos);
-      const media_preco = Math.round((precosValidos.reduce((a, b) => a + b, 0) / qtd_fornecedores) * 100) / 100;
+      // Pegar todos os preços
+      const precos = relacoesDoProduto.map(r => r.preco_final);
+      console.log(`💰 Preços: [${precos.join(', ')}]`);
       
-      // Encontrar o fornecedor com menor preço
-      const relacaoMenorPreco = relacoes.find(r => r.preco_final === menor_preco);
+      // Calcular estatísticas SIMPLES
+      const qtd_fornecedores = precos.length;
+      const menor_preco = Math.min(...precos);
+      const soma_precos = precos.reduce((a, b) => a + b, 0);
+      const preco_medio = Math.round((soma_precos / qtd_fornecedores) * 100) / 100;
+      
+      // Encontrar fornecedor do menor preço
+      const relacaoMenorPreco = relacoesDoProduto.find(r => r.preco_final === menor_preco);
       const fornecedor_menor_preco = relacaoMenorPreco.fornecedor;
       
-      console.log(`📊 Stats calculadas:`);
-      console.log(`   qtd_fornecedores: ${qtd_fornecedores}`);
-      console.log(`   media_preco: ${media_preco}`);
-      console.log(`   menor_preco: ${menor_preco}`);
-      console.log(`   fornecedor_menor_preco: ${fornecedor_menor_preco}`);
+      console.log(`📊 qtd_fornecedores: ${qtd_fornecedores}`);
+      console.log(`📊 menor_preco: ${menor_preco}`);
+      console.log(`📊 preco_medio: ${preco_medio}`);
+      console.log(`📊 fornecedor_menor_preco: ${fornecedor_menor_preco}`);
       
-      // Preparar operação para atualizar produto
-      operacoesProdutos.push({
-        produtoId,
-        dados: {
-          qtd_fornecedores,
-          preco_medio: media_preco,
-          menor_preco,
-          fornecedor_menor_preco
-        }
-      });
-      
-      // Preparar operações para atualizar relações (status_ativo)
-      relacoes.forEach(relacao => {
-        // status_ativo = 'yes' apenas para o item com menor preço
-        const isStatusAtivo = relacao.preco_final === menor_preco;
-        
-        operacoesRelacoes.push({
-          relacaoId: relacao._id,
-          statusAtivo: isStatusAtivo ? 'yes' : 'no',
-          precoFinal: relacao.preco_final,
-          menorPreco: menor_preco
+      // ATUALIZAR PRODUTO IMEDIATAMENTE
+      try {
+        await updateInBubble('1 - produtos_25marco', produtoId, {
+          qtd_fornecedores: qtd_fornecedores,
+          menor_preco: menor_preco,
+          preco_medio: preco_medio,
+          fornecedor_menor_preco: fornecedor_menor_preco
         });
         
-        console.log(`🏷️ Relação ${relacao._id}: status_ativo=${isStatusAtivo ? 'yes' : 'no'} (preço: ${relacao.preco_final})`);
-      });
-    }
-    
-    console.log(`\n📋 Operações preparadas:`);
-    console.log(`   Produtos para atualizar: ${operacoesProdutos.length}`);
-    console.log(`   Relações para atualizar: ${operacoesRelacoes.length}`);
-    
-    // 4. Executar atualizações dos produtos em lotes
-    console.log('\n📦 Atualizando produtos em lotes...');
-    let produtosAtualizados = 0;
-    
-    if (operacoesProdutos.length > 0) {
-      const { results: produtoResults, errors: produtoErrors } = await processBatch(
-        operacoesProdutos,
-        async (operacao) => {
-          console.log(`📦 Atualizando produto ${operacao.produtoId}:`, operacao.dados);
-          
-          return await updateInBubble('1 - produtos_25marco', operacao.produtoId, operacao.dados);
-        }
-      );
-      
-      produtosAtualizados = produtoResults.filter(r => r.success).length;
-      console.log(`✅ Produtos atualizados: ${produtosAtualizados}/${operacoesProdutos.length}`);
-      
-      if (produtoErrors.length > 0) {
-        console.error('❌ Erros ao atualizar produtos:', produtoErrors);
+        console.log(`✅ Produto ${produtoId} ATUALIZADO`);
+        contadorProdutos++;
+        
+      } catch (error) {
+        console.error(`❌ Erro ao atualizar produto ${produtoId}:`, error.message);
       }
-    }
-    
-    // 5. Executar atualizações das relações em lotes
-    console.log('\n🔗 Atualizando relações (status_ativo) em lotes...');
-    let relacoesAtualizadas = 0;
-    
-    if (operacoesRelacoes.length > 0) {
-      const { results: relacaoResults, errors: relacaoErrors } = await processBatch(
-        operacoesRelacoes,
-        async (operacao) => {
-          console.log(`🔗 Atualizando relação ${operacao.relacaoId}: status_ativo=${operacao.statusAtivo}`);
-          
-          return await updateInBubble('1 - ProdutoFornecedor _25marco', operacao.relacaoId, {
-            status_ativo: operacao.statusAtivo
+      
+      // ATUALIZAR CADA RELAÇÃO IMEDIATAMENTE
+      for (const relacao of relacoesDoProduto) {
+        const isStatusAtivo = relacao.preco_final === menor_preco;
+        const statusAtivo = isStatusAtivo ? 'yes' : 'no';
+        
+        try {
+          await updateInBubble('1 - ProdutoFornecedor _25marco', relacao._id, {
+            status_ativo: statusAtivo
           });
+          
+          console.log(`🏷️ Relação ${relacao._id}: status_ativo=${statusAtivo} (preço: ${relacao.preco_final})`);
+          contadorRelacoes++;
+          
+        } catch (error) {
+          console.error(`❌ Erro ao atualizar relação ${relacao._id}:`, error.message);
         }
-      );
-      
-      relacoesAtualizadas = relacaoResults.filter(r => r.success).length;
-      console.log(`✅ Relações atualizadas: ${relacoesAtualizadas}/${operacoesRelacoes.length}`);
-      
-      if (relacaoErrors.length > 0) {
-        console.error('❌ Erros ao atualizar relações:', relacaoErrors);
+        
+        // Delay pequeno entre atualizações
+        await delay(50);
       }
+      
+      // Delay entre produtos
+      await delay(200);
     }
     
-    // 6. Resetar status_ativo para produtos sem preço válido
-    console.log('\n🧹 Resetando status_ativo para relações sem preço válido...');
+    // 4. Resetar TODAS as relações com preço 0 ou inválido
+    console.log('\n🧹 Resetando relações inválidas...');
     const relacoesInvalidas = todasRelacoes.filter(r => !r.preco_final || r.preco_final <= 0);
     
-    let relacoesResetadas = 0;
-    
-    if (relacoesInvalidas.length > 0) {
-      console.log(`🧹 Encontradas ${relacoesInvalidas.length} relações com preço inválido`);
-      
-      const { results: resetResults, errors: resetErrors } = await processBatch(
-        relacoesInvalidas,
-        async (relacao) => {
-          console.log(`🧹 Resetando relação ${relacao._id}: status_ativo=no (preço: ${relacao.preco_final})`);
-          
-          return await updateInBubble('1 - ProdutoFornecedor _25marco', relacao._id, {
-            status_ativo: 'no'
-          });
-        }
-      );
-      
-      relacoesResetadas = resetResults.filter(r => r.success).length;
-      console.log(`✅ Relações resetadas: ${relacoesResetadas}/${relacoesInvalidas.length}`);
-      
-      if (resetErrors.length > 0) {
-        console.error('❌ Erros ao resetar relações:', resetErrors);
+    let contadorResetadas = 0;
+    for (const relacao of relacoesInvalidas) {
+      try {
+        await updateInBubble('1 - ProdutoFornecedor _25marco', relacao._id, {
+          status_ativo: 'no'
+        });
+        
+        console.log(`🧹 Relação ${relacao._id} resetada (preço: ${relacao.preco_final})`);
+        contadorResetadas++;
+        
+      } catch (error) {
+        console.error(`❌ Erro ao resetar relação ${relacao._id}:`, error.message);
       }
+      
+      await delay(50);
     }
     
-    const finalResults = {
-      produtos_processados: gruposPorProduto.size,
-      produtos_atualizados: produtosAtualizados,
-      relacoes_atualizadas: relacoesAtualizadas,
-      relacoes_resetadas: relacoesResetadas,
-      total_relacoes_processadas: todasRelacoes.length
+    const resultados = {
+      total_produtos_processados: produtoIds.length,
+      produtos_atualizados: contadorProdutos,
+      relacoes_atualizadas: contadorRelacoes,
+      relacoes_resetadas: contadorResetadas,
+      relacoes_invalidas_encontradas: relacoesInvalidas.length
     };
     
-    console.log('\n🔥 RECÁLCULO COM NOVA LÓGICA FINALIZADO!');
-    console.log('📊 Resultados finais:', finalResults);
+    console.log('\n🚀 RECÁLCULO SUPER SIMPLES FINALIZADO!');
+    console.log('📊 RESULTADOS FINAIS:', resultados);
     
-    return finalResults;
+    return resultados;
     
   } catch (error) {
-    console.error('❌ Erro no recálculo com nova lógica:', error);
+    console.error('❌ ERRO NO RECÁLCULO SIMPLES:', error);
     throw error;
   }
 }
@@ -838,17 +800,17 @@ async function syncWithBubble(csvData, gorduraValor) {
       results.erros.push(...zeramentoErrors);
     }
     
-    // 5. APLICAR NOVA LÓGICA DE RECÁLCULO
-    console.log('\n🔥 INICIANDO RECÁLCULO COM NOVA LÓGICA...');
-    const recalculoResults = await recalculateStatsNewLogic();
+    // 5. APLICAR LÓGICA SUPER SIMPLES
+    console.log('\n🚀 INICIANDO RECÁLCULO SUPER SIMPLES...');
+    const recalculoResults = await recalculateStatsSIMPLE();
     
     console.log('\n✅ Sincronização otimizada concluída!');
     console.log('📊 Resultados da sincronização:', results);
-    console.log('🔥 Resultados do recálculo:', recalculoResults);
+    console.log('🚀 Resultados do recálculo simples:', recalculoResults);
     
     return {
       ...results,
-      recalculo_nova_logica: recalculoResults
+      recalculo_simples: recalculoResults
     };
     
   } catch (error) {
@@ -942,30 +904,30 @@ app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
   }
 });
 
-// Rota para APLICAR nova lógica de recálculo
+// Rota para RECÁLCULO SUPER SIMPLES
 app.post('/force-recalculate', async (req, res) => {
   try {
-    console.log('\n🔥 === APLICANDO NOVA LÓGICA DE RECÁLCULO ===');
+    console.log('\n🚀 === RECÁLCULO SUPER SIMPLES ===');
     
     const startTime = Date.now();
-    const results = await recalculateStatsNewLogic();
+    const results = await recalculateStatsSIMPLE();
     const endTime = Date.now();
     const processingTime = (endTime - startTime) / 1000;
     
-    console.log(`🔥 Recálculo completo em ${processingTime}s`);
+    console.log(`🚀 Recálculo SIMPLES completo em ${processingTime}s`);
     
     res.json({
       success: true,
-      message: 'Nova lógica de recálculo aplicada com sucesso',
+      message: 'Recálculo SUPER SIMPLES concluído com sucesso',
       tempo_processamento: processingTime + 's',
       resultados: results,
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
-    console.error('❌ Erro na nova lógica de recálculo:', error);
+    console.error('❌ Erro no recálculo simples:', error);
     res.status(500).json({
-      error: 'Erro na nova lógica de recálculo',
+      error: 'Erro no recálculo simples',
       details: error.message,
       timestamp: new Date().toISOString()
     });
@@ -1182,7 +1144,7 @@ app.get('/', (req, res) => {
     ],
     endpoints: {
       'POST /process-csv': 'Envia arquivo CSV com parâmetro gordura_valor e sincroniza com Bubble',
-      'POST /force-recalculate': 'FORÇA recálculo de TODAS as estatísticas',
+      'POST /force-recalculate': 'APLICA nova lógica de recálculo de estatísticas',
       'GET /stats': 'Retorna estatísticas das tabelas',
       'GET /produto/:codigo': 'Busca produto específico por código',
       'GET /health': 'Verifica status da API',
