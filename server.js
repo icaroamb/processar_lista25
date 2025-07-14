@@ -126,7 +126,7 @@ async function retryOperation(operation, maxAttempts = PROCESSING_CONFIG.RETRY_A
   throw lastError;
 }
 
-// Função para buscar dados do Bubble com otimizações para alto volume
+// Função para buscar dados do Bubble com correção do loop infinito
 async function fetchAllFromBubble(tableName, filters = {}) {
   try {
     console.log(`🔍 Buscando dados de ${tableName}...`);
@@ -134,38 +134,68 @@ async function fetchAllFromBubble(tableName, filters = {}) {
     let cursor = 0;
     let hasMore = true;
     let totalFetched = 0;
+    let maxIterations = 1000; // Proteção contra loop infinito
+    let currentIteration = 0;
     
-    while (hasMore) {
-      await retryOperation(async () => {
-        const params = { cursor, limit: 100, ...filters };
-        
-        const response = await axios.get(`${BUBBLE_CONFIG.baseURL}/${tableName}`, {
+    while (hasMore && currentIteration < maxIterations) {
+      currentIteration++;
+      
+      const params = { cursor, limit: 100, ...filters };
+      
+      const response = await retryOperation(async () => {
+        return await axios.get(`${BUBBLE_CONFIG.baseURL}/${tableName}`, {
           headers: BUBBLE_CONFIG.headers,
           params,
           timeout: PROCESSING_CONFIG.REQUEST_TIMEOUT
         });
-        
-        const data = response.data;
-        
-        if (!data.response || !data.response.results) {
-          throw new Error(`Estrutura de resposta inválida para ${tableName}`);
-        }
-        
-        allData = allData.concat(data.response.results);
-        totalFetched += data.response.results.length;
-        hasMore = data.response.remaining > 0;
-        cursor = data.response.cursor || (cursor + 100);
-        
-        console.log(`📊 ${tableName}: ${totalFetched} registros carregados (restam: ${data.response.remaining})`);
-        
-        // Pequeno delay para evitar rate limiting
-        if (hasMore) {
-          await delay(50);
-        }
       });
+      
+      const data = response.data;
+      
+      if (!data.response || !data.response.results) {
+        throw new Error(`Estrutura de resposta inválida para ${tableName}`);
+      }
+      
+      const newResults = data.response.results;
+      
+      // Se não há novos resultados, sair do loop
+      if (!newResults || newResults.length === 0) {
+        console.log(`📊 ${tableName}: Nenhum novo resultado encontrado, finalizando busca`);
+        break;
+      }
+      
+      allData = allData.concat(newResults);
+      totalFetched += newResults.length;
+      
+      // Verificar se há mais dados usando múltiplas condições
+      const remaining = data.response.remaining || 0;
+      const newCursor = data.response.cursor;
+      
+      hasMore = remaining > 0 && newCursor && newCursor !== cursor;
+      
+      if (hasMore) {
+        cursor = newCursor;
+      }
+      
+      console.log(`📊 ${tableName}: ${totalFetched} registros carregados (restam: ${remaining}, cursor: ${cursor})`);
+      
+      // Pequeno delay para evitar rate limiting
+      if (hasMore) {
+        await delay(50);
+      }
+      
+      // Proteção adicional: se o cursor não mudou, sair do loop
+      if (newCursor === cursor && remaining > 0) {
+        console.warn(`⚠️ ${tableName}: Cursor não mudou, possível loop infinito detectado. Finalizando busca.`);
+        break;
+      }
     }
     
-    console.log(`✅ ${tableName}: ${allData.length} registros carregados (total)`);
+    if (currentIteration >= maxIterations) {
+      console.warn(`⚠️ ${tableName}: Atingido limite máximo de iterações (${maxIterations}). Possível loop infinito.`);
+    }
+    
+    console.log(`✅ ${tableName}: ${allData.length} registros carregados (total em ${currentIteration} iterações)`);
     return allData;
     
   } catch (error) {
@@ -383,11 +413,15 @@ async function syncWithBubble(csvData, gorduraValor) {
       erros: []
     };
     
-    // 3. PREPARAR TODAS AS OPERAÇÕES EM MEMÓRIA PRIMEIRO
+    // 3. PREPARAR TODAS AS OPERAÇÕES EM MEMÓRIA PRIMEIRO - COM VERIFICAÇÃO DE DUPLICATAS
     console.log('\n📝 Preparando operações...');
     const operacoesFornecedores = [];
     const operacoesProdutos = [];
     const operacoesRelacoes = [];
+    
+    // Sets para evitar duplicatas nas operações
+    const fornecedoresParaCriar = new Set();
+    const produtosParaCriar = new Set();
     
     // Coletar todos os códigos cotados por fornecedor para lógica de cotação diária
     const codigosCotadosPorFornecedor = new Map();
@@ -395,10 +429,12 @@ async function syncWithBubble(csvData, gorduraValor) {
     for (const lojaData of csvData) {
       const codigosCotados = new Set();
       
-      // 3.1 Verificar fornecedor
-      if (!fornecedorMap.has(lojaData.loja)) {
+      // 3.1 Verificar fornecedor (evitar duplicatas)
+      if (!fornecedorMap.has(lojaData.loja) && !fornecedoresParaCriar.has(lojaData.loja)) {
+        fornecedoresParaCriar.add(lojaData.loja);
         operacoesFornecedores.push({
           tipo: 'criar',
+          nome: lojaData.loja,
           dados: {
             nome_fornecedor: lojaData.loja,
             status_ativo: 'yes'
@@ -406,12 +442,13 @@ async function syncWithBubble(csvData, gorduraValor) {
         });
       }
       
-      // 3.2 Processar produtos da loja
+      // 3.2 Processar produtos da loja (evitar duplicatas)
       for (const produtoCsv of lojaData.produtos) {
         codigosCotados.add(produtoCsv.codigo);
         
-        // Verificar produto
-        if (!produtoMap.has(produtoCsv.codigo)) {
+        // Verificar produto (evitar duplicatas)
+        if (!produtoMap.has(produtoCsv.codigo) && !produtosParaCriar.has(produtoCsv.codigo)) {
+          produtosParaCriar.add(produtoCsv.codigo);
           operacoesProdutos.push({
             tipo: 'criar',
             codigo: produtoCsv.codigo,
@@ -445,45 +482,140 @@ async function syncWithBubble(csvData, gorduraValor) {
       codigosCotadosPorFornecedor.set(lojaData.loja, codigosCotados);
     }
     
-    console.log(`📋 Operações preparadas: ${operacoesFornecedores.length} fornecedores, ${operacoesProdutos.length} produtos, ${operacoesRelacoes.length} relações`);
+    console.log(`📋 Operações preparadas: ${operacoesFornecedores.length} fornecedores únicos, ${operacoesProdutos.length} produtos únicos, ${operacoesRelacoes.length} relações`);
     
     // 4. EXECUTAR OPERAÇÕES EM LOTES
     
-    // 4.1 Criar fornecedores em lotes
+    // 4.1 Criar fornecedores em lotes - COM VERIFICAÇÃO DE DUPLICAÇÃO
     if (operacoesFornecedores.length > 0) {
       console.log('\n👥 Criando fornecedores...');
-      const { results: fornecedorResults, errors: fornecedorErrors } = await processBatch(
-        operacoesFornecedores,
-        async (operacao) => {
-          const novoFornecedor = await createInBubble('1 - fornecedor_25marco', operacao.dados);
-          fornecedorMap.set(operacao.dados.nome_fornecedor, {
-            _id: novoFornecedor.id,
-            nome_fornecedor: operacao.dados.nome_fornecedor
-          });
-          return novoFornecedor;
+      
+      // Verificar se fornecedores já existem antes de criar
+      const fornecedoresParaCriar = [];
+      
+      for (const operacao of operacoesFornecedores) {
+        // Verificação dupla: no mapa local E busca no Bubble
+        if (!fornecedorMap.has(operacao.nome)) {
+          // Buscar no Bubble para garantir que não existe
+          try {
+            const fornecedorExistente = await fetchAllFromBubble('1 - fornecedor_25marco', {
+              'constraints': [{
+                'key': 'nome_fornecedor',
+                'constraint_type': 'equals',
+                'value': operacao.nome
+              }]
+            });
+            
+            if (fornecedorExistente.length === 0) {
+              fornecedoresParaCriar.push(operacao);
+            } else {
+              // Fornecedor já existe, adicionar ao mapa
+              const fornecedor = fornecedorExistente[0];
+              fornecedorMap.set(operacao.nome, {
+                _id: fornecedor._id,
+                nome_fornecedor: fornecedor.nome_fornecedor
+              });
+              console.log(`📋 Fornecedor ${operacao.nome} já existe, pulando criação`);
+            }
+          } catch (error) {
+            console.warn(`⚠️ Erro ao verificar fornecedor ${operacao.nome}:`, error.message);
+            fornecedoresParaCriar.push(operacao); // Em caso de erro, tentar criar
+          }
         }
-      );
-      results.fornecedores_criados = fornecedorResults.filter(r => r.success).length;
-      results.erros.push(...fornecedorErrors);
+        
+        // Pequeno delay para evitar sobrecarga
+        await delay(10);
+      }
+      
+      console.log(`👥 Fornecedores únicos para criar: ${fornecedoresParaCriar.length} de ${operacoesFornecedores.length}`);
+      
+      if (fornecedoresParaCriar.length > 0) {
+        const { results: fornecedorResults, errors: fornecedorErrors } = await processBatch(
+          fornecedoresParaCriar,
+          async (operacao) => {
+            // Verificação final antes de criar
+            if (fornecedorMap.has(operacao.nome)) {
+              return { skipped: true, nome: operacao.nome };
+            }
+            
+            const novoFornecedor = await createInBubble('1 - fornecedor_25marco', operacao.dados);
+            fornecedorMap.set(operacao.dados.nome_fornecedor, {
+              _id: novoFornecedor.id,
+              nome_fornecedor: operacao.dados.nome_fornecedor
+            });
+            return novoFornecedor;
+          }
+        );
+        results.fornecedores_criados = fornecedorResults.filter(r => r.success && !r.result?.skipped).length;
+        results.erros.push(...fornecedorErrors);
+      }
     }
     
-    // 4.2 Criar produtos em lotes
+    // 4.2 Criar produtos em lotes - COM VERIFICAÇÃO DE DUPLICAÇÃO
     if (operacoesProdutos.length > 0) {
       console.log('\n📦 Criando produtos...');
-      const { results: produtoResults, errors: produtoErrors } = await processBatch(
-        operacoesProdutos,
-        async (operacao) => {
-          const novoProduto = await createInBubble('1 - produtos_25marco', operacao.dados);
-          produtoMap.set(operacao.codigo, {
-            _id: novoProduto.id,
-            id_planilha: operacao.codigo,
-            nome_completo: operacao.dados.nome_completo
-          });
-          return novoProduto;
+      
+      // Verificar se produtos já existem antes de criar
+      const produtosParaCriar = [];
+      
+      for (const operacao of operacoesProdutos) {
+        // Verificação dupla: no mapa local E busca no Bubble
+        if (!produtoMap.has(operacao.codigo)) {
+          // Buscar no Bubble para garantir que não existe
+          try {
+            const produtoExistente = await fetchAllFromBubble('1 - produtos_25marco', {
+              'constraints': [{
+                'key': 'id_planilha',
+                'constraint_type': 'equals',
+                'value': operacao.codigo
+              }]
+            });
+            
+            if (produtoExistente.length === 0) {
+              produtosParaCriar.push(operacao);
+            } else {
+              // Produto já existe, adicionar ao mapa
+              const produto = produtoExistente[0];
+              produtoMap.set(operacao.codigo, {
+                _id: produto._id,
+                id_planilha: produto.id_planilha,
+                nome_completo: produto.nome_completo
+              });
+              console.log(`📋 Produto ${operacao.codigo} já existe, pulando criação`);
+            }
+          } catch (error) {
+            console.warn(`⚠️ Erro ao verificar produto ${operacao.codigo}:`, error.message);
+            produtosParaCriar.push(operacao); // Em caso de erro, tentar criar
+          }
         }
-      );
-      results.produtos_criados = produtoResults.filter(r => r.success).length;
-      results.erros.push(...produtoErrors);
+        
+        // Pequeno delay para evitar sobrecarga
+        await delay(10);
+      }
+      
+      console.log(`📦 Produtos únicos para criar: ${produtosParaCriar.length} de ${operacoesProdutos.length}`);
+      
+      if (produtosParaCriar.length > 0) {
+        const { results: produtoResults, errors: produtoErrors } = await processBatch(
+          produtosParaCriar,
+          async (operacao) => {
+            // Verificação final antes de criar
+            if (produtoMap.has(operacao.codigo)) {
+              return { skipped: true, codigo: operacao.codigo };
+            }
+            
+            const novoProduto = await createInBubble('1 - produtos_25marco', operacao.dados);
+            produtoMap.set(operacao.codigo, {
+              _id: novoProduto.id,
+              id_planilha: operacao.codigo,
+              nome_completo: operacao.dados.nome_completo
+            });
+            return novoProduto;
+          }
+        );
+        results.produtos_criados = produtoResults.filter(r => r.success && !r.result?.skipped).length;
+        results.erros.push(...produtoErrors);
+      }
     }
     
     // 4.3 Processar relações em lotes
