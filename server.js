@@ -226,141 +226,116 @@ async function updateInBubble(tableName, itemId, data) {
   });
 }
 
-// Função SUPER SIMPLES para recalcular estatísticas - SEM COMPLICAÇÕES
-async function recalculateStatsSIMPLE() {
+// FUNÇÃO FINAL - EXECUTA POR ÚLTIMO - EXATAMENTE COMO ESPECIFICADO
+async function executarLogicaFinal() {
+  console.log('\n🔥 === EXECUTANDO LÓGICA FINAL (ÚLTIMA COISA) ===');
+  
   try {
-    console.log('\n🚀 RECÁLCULO SUPER SIMPLES INICIADO...');
+    // 1. Buscar na tabela "1 - ProdutoFornecedor_25marco"
+    console.log('📊 1. Buscando na tabela "1 - ProdutoFornecedor_25marco"...');
+    const relacoes = await fetchAllFromBubble('1 - ProdutoFornecedor _25marco');
+    console.log(`📊 Total de relações encontradas: ${relacoes.length}`);
     
-    // 1. Buscar TODAS as relações - SEM FILTROS
-    console.log('📊 Buscando TODAS as relações...');
-    const todasRelacoes = await fetchAllFromBubble('1 - ProdutoFornecedor _25marco');
-    console.log(`📊 TOTAL de relações: ${todasRelacoes.length}`);
-    
-    // 2. Agrupar por produto de forma SUPER SIMPLES
-    console.log('📊 Agrupando por produto...');
+    // 2. Agrupar pelo campo "produto" DESDE QUE preco_final não seja 0 nem vazio
+    console.log('📊 2. Agrupando pelo campo "produto" (preco_final válido)...');
     const grupos = {};
     
-    todasRelacoes.forEach(relacao => {
-      // Só considerar se tem preco_final válido
+    relacoes.forEach(relacao => {
+      // DESDE QUE preco_final não seja 0 nem vazio
       if (relacao.preco_final && relacao.preco_final > 0) {
-        const produtoId = relacao.produto;
+        const produtoId = relacao.produto; // campo "produto" = _id da tabela produtos
         
         if (!grupos[produtoId]) {
           grupos[produtoId] = [];
         }
-        
         grupos[produtoId].push(relacao);
       }
     });
     
     const produtoIds = Object.keys(grupos);
-    console.log(`📊 Produtos com preços válidos: ${produtoIds.length}`);
+    console.log(`📊 Produtos agrupados: ${produtoIds.length}`);
     
-    let contadorProdutos = 0;
-    let contadorRelacoes = 0;
+    // 3. Para TODOS os produtos - calcular e editar na tabela "1 - produtos_25marco"
+    console.log('📊 3. Calculando para TODOS os produtos...');
     
-    // 3. Para CADA produto, calcular e ATUALIZAR IMEDIATAMENTE
     for (const produtoId of produtoIds) {
-      const relacoesDoProduto = grupos[produtoId];
+      const grupo = grupos[produtoId];
+      console.log(`\n📦 Produto ID: ${produtoId} (${grupo.length} itens no grupo)`);
       
-      console.log(`\n📦 Produto ${produtoId}: ${relacoesDoProduto.length} relações`);
+      // Extrair precos_final do grupo
+      const precos = grupo.map(item => item.preco_final);
+      console.log(`💰 Preços do grupo: [${precos.join(', ')}]`);
       
-      // Pegar todos os preços
-      const precos = relacoesDoProduto.map(r => r.preco_final);
-      console.log(`💰 Preços: [${precos.join(', ')}]`);
+      // CALCULAR conforme especificado:
       
-      // Calcular estatísticas SIMPLES
-      const qtd_fornecedores = precos.length;
+      // qtd_fornecedores = quantidade de itens do grupo
+      const qtd_fornecedores = grupo.length;
+      
+      // menor_preco = o menor valor de "preco_final" do grupo  
       const menor_preco = Math.min(...precos);
-      const soma_precos = precos.reduce((a, b) => a + b, 0);
-      const preco_medio = Math.round((soma_precos / qtd_fornecedores) * 100) / 100;
       
-      // Encontrar fornecedor do menor preço
-      const relacaoMenorPreco = relacoesDoProduto.find(r => r.preco_final === menor_preco);
-      const fornecedor_menor_preco = relacaoMenorPreco.fornecedor;
+      // media_preco = soma de todos os "preco_final" / qtd_fornecedores
+      const soma = precos.reduce((a, b) => a + b, 0);
+      const preco_medio = Math.round((soma / qtd_fornecedores) * 100) / 100;
       
-      console.log(`📊 qtd_fornecedores: ${qtd_fornecedores}`);
-      console.log(`📊 menor_preco: ${menor_preco}`);
-      console.log(`📊 preco_medio: ${preco_medio}`);
-      console.log(`📊 fornecedor_menor_preco: ${fornecedor_menor_preco}`);
+      // fornecedor_menor_preco = valor do campo "fornecedor" do item com menor preço
+      const itemMenorPreco = grupo.find(item => item.preco_final === menor_preco);
+      const fornecedor_menor_preco = itemMenorPreco.fornecedor;
       
-      // ATUALIZAR PRODUTO IMEDIATAMENTE
-      try {
-        await updateInBubble('1 - produtos_25marco', produtoId, {
-          qtd_fornecedores: qtd_fornecedores,
-          menor_preco: menor_preco,
-          preco_medio: preco_medio,
-          fornecedor_menor_preco: fornecedor_menor_preco
+      console.log(`📊 Calculado:`);
+      console.log(`   qtd_fornecedores: ${qtd_fornecedores}`);
+      console.log(`   menor_preco: ${menor_preco}`);
+      console.log(`   preco_medio: ${preco_medio}`);
+      console.log(`   fornecedor_menor_preco: ${fornecedor_menor_preco}`);
+      
+      // EDITAR na tabela "1 - produtos_25marco"
+      await updateInBubble('1 - produtos_25marco', produtoId, {
+        qtd_fornecedores: qtd_fornecedores,
+        menor_preco: menor_preco,
+        preco_medio: preco_medio,
+        fornecedor_menor_preco: fornecedor_menor_preco
+      });
+      
+      console.log(`✅ Produto ${produtoId} EDITADO na tabela produtos_25marco`);
+      
+      // 4. Para cada item do grupo - editar status_ativo na tabela "1 - ProdutoFornecedor_25marco"
+      for (const item of grupo) {
+        // status_ativo = yes SOMENTE para o item cujo preco_final seja o menor
+        const status_ativo = (item.preco_final === menor_preco) ? 'yes' : 'no';
+        
+        await updateInBubble('1 - ProdutoFornecedor _25marco', item._id, {
+          status_ativo: status_ativo
         });
         
-        console.log(`✅ Produto ${produtoId} ATUALIZADO`);
-        contadorProdutos++;
-        
-      } catch (error) {
-        console.error(`❌ Erro ao atualizar produto ${produtoId}:`, error.message);
+        console.log(`🏷️ Item ${item._id}: status_ativo=${status_ativo} (preço: ${item.preco_final})`);
       }
       
-      // ATUALIZAR CADA RELAÇÃO IMEDIATAMENTE
-      for (const relacao of relacoesDoProduto) {
-        const isStatusAtivo = relacao.preco_final === menor_preco;
-        const statusAtivo = isStatusAtivo ? 'yes' : 'no';
-        
-        try {
-          await updateInBubble('1 - ProdutoFornecedor _25marco', relacao._id, {
-            status_ativo: statusAtivo
-          });
-          
-          console.log(`🏷️ Relação ${relacao._id}: status_ativo=${statusAtivo} (preço: ${relacao.preco_final})`);
-          contadorRelacoes++;
-          
-        } catch (error) {
-          console.error(`❌ Erro ao atualizar relação ${relacao._id}:`, error.message);
-        }
-        
-        // Delay pequeno entre atualizações
-        await delay(50);
-      }
-      
-      // Delay entre produtos
-      await delay(200);
+      await delay(100); // Delay entre produtos
     }
     
-    // 4. Resetar TODAS as relações com preço 0 ou inválido
-    console.log('\n🧹 Resetando relações inválidas...');
-    const relacoesInvalidas = todasRelacoes.filter(r => !r.preco_final || r.preco_final <= 0);
+    // 5. Garantir que itens com preço 0 ou vazio tenham status_ativo = no
+    console.log('\n🧹 5. Garantindo status_ativo=no para preços inválidos...');
+    const itensInvalidos = relacoes.filter(r => !r.preco_final || r.preco_final <= 0);
     
-    let contadorResetadas = 0;
-    for (const relacao of relacoesInvalidas) {
-      try {
-        await updateInBubble('1 - ProdutoFornecedor _25marco', relacao._id, {
-          status_ativo: 'no'
-        });
-        
-        console.log(`🧹 Relação ${relacao._id} resetada (preço: ${relacao.preco_final})`);
-        contadorResetadas++;
-        
-      } catch (error) {
-        console.error(`❌ Erro ao resetar relação ${relacao._id}:`, error.message);
-      }
-      
-      await delay(50);
+    for (const item of itensInvalidos) {
+      await updateInBubble('1 - ProdutoFornecedor _25marco', item._id, {
+        status_ativo: 'no'
+      });
+      console.log(`🧹 Item ${item._id}: status_ativo=no (preço inválido: ${item.preco_final})`);
     }
     
-    const resultados = {
-      total_produtos_processados: produtoIds.length,
-      produtos_atualizados: contadorProdutos,
-      relacoes_atualizadas: contadorRelacoes,
-      relacoes_resetadas: contadorResetadas,
-      relacoes_invalidas_encontradas: relacoesInvalidas.length
+    console.log('\n🔥 === LÓGICA FINAL CONCLUÍDA ===');
+    console.log(`✅ ${produtoIds.length} produtos processados`);
+    console.log(`✅ ${itensInvalidos.length} itens inválidos resetados`);
+    
+    return {
+      produtos_processados: produtoIds.length,
+      itens_invalidos_resetados: itensInvalidos.length,
+      sucesso: true
     };
     
-    console.log('\n🚀 RECÁLCULO SUPER SIMPLES FINALIZADO!');
-    console.log('📊 RESULTADOS FINAIS:', resultados);
-    
-    return resultados;
-    
   } catch (error) {
-    console.error('❌ ERRO NO RECÁLCULO SIMPLES:', error);
+    console.error('❌ ERRO na lógica final:', error);
     throw error;
   }
 }
@@ -800,17 +775,18 @@ async function syncWithBubble(csvData, gorduraValor) {
       results.erros.push(...zeramentoErrors);
     }
     
-    // 5. APLICAR LÓGICA SUPER SIMPLES
-    console.log('\n🚀 INICIANDO RECÁLCULO SUPER SIMPLES...');
-    const recalculoResults = await recalculateStatsSIMPLE();
-    
     console.log('\n✅ Sincronização otimizada concluída!');
     console.log('📊 Resultados da sincronização:', results);
-    console.log('🚀 Resultados do recálculo simples:', recalculoResults);
+    
+    // === ESTA É A ÚLTIMA COISA QUE O CÓDIGO FAZ ===
+    // === EXECUTAR A LÓGICA FINAL EXATAMENTE COMO ESPECIFICADO ===
+    console.log('\n🔥 EXECUTANDO LÓGICA FINAL - ÚLTIMA COISA DO CÓDIGO!');
+    const logicaFinalResults = await executarLogicaFinal();
+    console.log('🔥 Lógica final concluída:', logicaFinalResults);
     
     return {
       ...results,
-      recalculo_simples: recalculoResults
+      logica_final: logicaFinalResults
     };
     
   } catch (error) {
@@ -904,30 +880,30 @@ app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
   }
 });
 
-// Rota para RECÁLCULO SUPER SIMPLES
+// Rota para EXECUTAR LÓGICA FINAL
 app.post('/force-recalculate', async (req, res) => {
   try {
-    console.log('\n🚀 === RECÁLCULO SUPER SIMPLES ===');
+    console.log('\n🔥 === EXECUTANDO LÓGICA FINAL MANUALMENTE ===');
     
     const startTime = Date.now();
-    const results = await recalculateStatsSIMPLE();
+    const results = await executarLogicaFinal();
     const endTime = Date.now();
     const processingTime = (endTime - startTime) / 1000;
     
-    console.log(`🚀 Recálculo SIMPLES completo em ${processingTime}s`);
+    console.log(`🔥 Lógica final executada em ${processingTime}s`);
     
     res.json({
       success: true,
-      message: 'Recálculo SUPER SIMPLES concluído com sucesso',
+      message: 'LÓGICA FINAL executada com sucesso',
       tempo_processamento: processingTime + 's',
       resultados: results,
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
-    console.error('❌ Erro no recálculo simples:', error);
+    console.error('❌ Erro na lógica final:', error);
     res.status(500).json({
-      error: 'Erro no recálculo simples',
+      error: 'Erro na LÓGICA FINAL',
       details: error.message,
       timestamp: new Date().toISOString()
     });
@@ -1144,7 +1120,7 @@ app.get('/', (req, res) => {
     ],
     endpoints: {
       'POST /process-csv': 'Envia arquivo CSV com parâmetro gordura_valor e sincroniza com Bubble',
-      'POST /force-recalculate': 'APLICA nova lógica de recálculo de estatísticas',
+      'POST /force-recalculate': 'EXECUTA a lógica final de recálculo',
       'GET /stats': 'Retorna estatísticas das tabelas',
       'GET /produto/:codigo': 'Busca produto específico por código',
       'GET /health': 'Verifica status da API',
