@@ -226,45 +226,78 @@ async function updateInBubble(tableName, itemId, data) {
   });
 }
 
-// FUNÇÃO FINAL - EXECUTA POR ÚLTIMO - EXATAMENTE COMO ESPECIFICADO
-async function executarLogicaFinal() {
-  console.log('\n🔥 === EXECUTANDO LÓGICA FINAL (ÚLTIMA COISA) ===');
+// FUNÇÃO FINAL CORRETA - EXATAMENTE COMO ESPECIFICADO
+async function executarLogicaFinalCorreta() {
+  console.log('\n🔥 === EXECUTANDO LÓGICA FINAL CORRETA (ÚLTIMA COISA) ===');
   
   try {
-    // 1. Buscar na tabela "1 - ProdutoFornecedor_25marco"
-    console.log('📊 1. Buscando na tabela "1 - ProdutoFornecedor_25marco"...');
-    const relacoes = await fetchAllFromBubble('1 - ProdutoFornecedor _25marco');
-    console.log(`📊 Total de relações encontradas: ${relacoes.length}`);
+    // 1. Buscar TODOS os itens da tabela "1 - ProdutoFornecedor_25marco" COM PAGINAÇÃO
+    console.log('📊 1. Buscando TODOS os itens da tabela "1 - ProdutoFornecedor_25marco"...');
+    
+    let todosOsItens = [];
+    let cursor = 0;
+    let hasMore = true;
+    
+    while (hasMore) {
+      console.log(`📊 Buscando página com cursor: ${cursor}`);
+      
+      const response = await axios.get(`${BUBBLE_CONFIG.baseURL}/1 - ProdutoFornecedor _25marco`, {
+        headers: BUBBLE_CONFIG.headers,
+        params: { cursor, limit: 100 },
+        timeout: PROCESSING_CONFIG.REQUEST_TIMEOUT
+      });
+      
+      const data = response.data;
+      
+      if (!data.response || !data.response.results) {
+        throw new Error('Resposta inválida da API');
+      }
+      
+      todosOsItens = todosOsItens.concat(data.response.results);
+      hasMore = data.response.remaining > 0;
+      cursor = data.response.cursor || (cursor + 100);
+      
+      console.log(`📊 Página carregada: ${data.response.results.length} itens (remaining: ${data.response.remaining})`);
+      
+      if (hasMore) {
+        await delay(50); // Delay entre páginas
+      }
+    }
+    
+    console.log(`📊 Total de itens carregados: ${todosOsItens.length}`);
     
     // 2. Agrupar pelo campo "produto" DESDE QUE preco_final não seja 0 nem vazio
-    console.log('📊 2. Agrupando pelo campo "produto" (preco_final válido)...');
+    console.log('📊 2. Agrupando pelo campo "produto"...');
     const grupos = {};
     
-    relacoes.forEach(relacao => {
+    todosOsItens.forEach(item => {
       // DESDE QUE preco_final não seja 0 nem vazio
-      if (relacao.preco_final && relacao.preco_final > 0) {
-        const produtoId = relacao.produto; // campo "produto" = _id da tabela produtos
+      if (item.preco_final && item.preco_final > 0) {
+        const produtoId = item.produto; // Campo "produto" = _id da tabela produtos
         
         if (!grupos[produtoId]) {
           grupos[produtoId] = [];
         }
-        grupos[produtoId].push(relacao);
+        grupos[produtoId].push(item);
       }
     });
     
     const produtoIds = Object.keys(grupos);
     console.log(`📊 Produtos agrupados: ${produtoIds.length}`);
     
-    // 3. Para TODOS os produtos - calcular e editar na tabela "1 - produtos_25marco"
-    console.log('📊 3. Calculando para TODOS os produtos...');
+    let produtosEditados = 0;
+    let itensEditados = 0;
+    
+    // 3. Para CADA produto agrupado, calcular e EDITAR na tabela "1 - produtos_25marco"
+    console.log('📊 3. Calculando e editando produtos...');
     
     for (const produtoId of produtoIds) {
       const grupo = grupos[produtoId];
       console.log(`\n📦 Produto ID: ${produtoId} (${grupo.length} itens no grupo)`);
       
-      // Extrair precos_final do grupo
-      const precos = grupo.map(item => item.preco_final);
-      console.log(`💰 Preços do grupo: [${precos.join(', ')}]`);
+      // Extrair preco_final de todos os itens do grupo
+      const precosFinal = grupo.map(item => item.preco_final);
+      console.log(`💰 Preços finais: [${precosFinal.join(', ')}]`);
       
       // CALCULAR conforme especificado:
       
@@ -272,70 +305,100 @@ async function executarLogicaFinal() {
       const qtd_fornecedores = grupo.length;
       
       // menor_preco = o menor valor de "preco_final" do grupo  
-      const menor_preco = Math.min(...precos);
+      const menor_preco = Math.min(...precosFinal);
       
       // media_preco = soma de todos os "preco_final" / qtd_fornecedores
-      const soma = precos.reduce((a, b) => a + b, 0);
+      const soma = precosFinal.reduce((a, b) => a + b, 0);
       const preco_medio = Math.round((soma / qtd_fornecedores) * 100) / 100;
       
       // fornecedor_menor_preco = valor do campo "fornecedor" do item com menor preço
-      const itemMenorPreco = grupo.find(item => item.preco_final === menor_preco);
-      const fornecedor_menor_preco = itemMenorPreco.fornecedor;
+      const itemComMenorPreco = grupo.find(item => item.preco_final === menor_preco);
+      const fornecedor_menor_preco = itemComMenorPreco.fornecedor;
       
-      console.log(`📊 Calculado:`);
+      console.log(`📊 Valores calculados:`);
       console.log(`   qtd_fornecedores: ${qtd_fornecedores}`);
       console.log(`   menor_preco: ${menor_preco}`);
       console.log(`   preco_medio: ${preco_medio}`);
       console.log(`   fornecedor_menor_preco: ${fornecedor_menor_preco}`);
       
-      // EDITAR na tabela "1 - produtos_25marco"
-      await updateInBubble('1 - produtos_25marco', produtoId, {
-        qtd_fornecedores: qtd_fornecedores,
-        menor_preco: menor_preco,
-        preco_medio: preco_medio,
-        fornecedor_menor_preco: fornecedor_menor_preco
-      });
-      
-      console.log(`✅ Produto ${produtoId} EDITADO na tabela produtos_25marco`);
-      
-      // 4. Para cada item do grupo - editar status_ativo na tabela "1 - ProdutoFornecedor_25marco"
-      for (const item of grupo) {
-        // status_ativo = yes SOMENTE para o item cujo preco_final seja o menor
-        const status_ativo = (item.preco_final === menor_preco) ? 'yes' : 'no';
-        
-        await updateInBubble('1 - ProdutoFornecedor _25marco', item._id, {
-          status_ativo: status_ativo
+      // EDITAR na tabela "1 - produtos_25marco" onde _id === produtoId
+      try {
+        await updateInBubble('1 - produtos_25marco', produtoId, {
+          qtd_fornecedores: qtd_fornecedores,
+          menor_preco: menor_preco,
+          preco_medio: preco_medio,
+          fornecedor_menor_preco: fornecedor_menor_preco
         });
         
-        console.log(`🏷️ Item ${item._id}: status_ativo=${status_ativo} (preço: ${item.preco_final})`);
+        produtosEditados++;
+        console.log(`✅ Produto ${produtoId} EDITADO na tabela produtos_25marco`);
+        
+      } catch (error) {
+        console.error(`❌ ERRO ao editar produto ${produtoId}:`, error.message);
+      }
+      
+      // 4. Para cada item do grupo - editar melhor_preco na tabela "1 - ProdutoFornecedor_25marco"
+      for (const item of grupo) {
+        // melhor_preco = yes SOMENTE para o item cujo preco_final seja o menor
+        // Os que não forem o melhor_preco, recebem no
+        const melhor_preco = (item.preco_final === menor_preco) ? 'yes' : 'no';
+        
+        try {
+          await updateInBubble('1 - ProdutoFornecedor _25marco', item._id, {
+            melhor_preco: melhor_preco
+          });
+          
+          itensEditados++;
+          console.log(`🏷️ Item ${item._id}: melhor_preco=${melhor_preco} (preço: ${item.preco_final}, menor: ${menor_preco})`);
+          
+        } catch (error) {
+          console.error(`❌ ERRO ao editar item ${item._id}:`, error.message);
+        }
+        
+        await delay(50); // Delay entre itens
       }
       
       await delay(100); // Delay entre produtos
     }
     
-    // 5. Garantir que itens com preço 0 ou vazio tenham status_ativo = no
-    console.log('\n🧹 5. Garantindo status_ativo=no para preços inválidos...');
-    const itensInvalidos = relacoes.filter(r => !r.preco_final || r.preco_final <= 0);
+    // 5. Garantir que itens com preço 0 ou vazio tenham melhor_preco = no
+    console.log('\n🧹 5. Garantindo melhor_preco=no para preços inválidos...');
+    const itensInvalidos = todosOsItens.filter(item => !item.preco_final || item.preco_final <= 0);
     
+    let itensInvalidosEditados = 0;
     for (const item of itensInvalidos) {
-      await updateInBubble('1 - ProdutoFornecedor _25marco', item._id, {
-        status_ativo: 'no'
-      });
-      console.log(`🧹 Item ${item._id}: status_ativo=no (preço inválido: ${item.preco_final})`);
+      try {
+        await updateInBubble('1 - ProdutoFornecedor _25marco', item._id, {
+          melhor_preco: 'no'
+        });
+        
+        itensInvalidosEditados++;
+        console.log(`🧹 Item ${item._id}: melhor_preco=no (preço inválido: ${item.preco_final})`);
+        
+      } catch (error) {
+        console.error(`❌ ERRO ao editar item inválido ${item._id}:`, error.message);
+      }
+      
+      await delay(50);
     }
     
-    console.log('\n🔥 === LÓGICA FINAL CONCLUÍDA ===');
-    console.log(`✅ ${produtoIds.length} produtos processados`);
-    console.log(`✅ ${itensInvalidos.length} itens inválidos resetados`);
-    
-    return {
-      produtos_processados: produtoIds.length,
-      itens_invalidos_resetados: itensInvalidos.length,
+    const resultados = {
+      total_itens_carregados: todosOsItens.length,
+      produtos_agrupados: produtoIds.length,
+      produtos_editados: produtosEditados,
+      itens_editados: itensEditados,
+      itens_invalidos: itensInvalidos.length,
+      itens_invalidos_editados: itensInvalidosEditados,
       sucesso: true
     };
     
+    console.log('\n🔥 === LÓGICA FINAL CORRETA CONCLUÍDA ===');
+    console.log('📊 RESULTADOS:', resultados);
+    
+    return resultados;
+    
   } catch (error) {
-    console.error('❌ ERRO na lógica final:', error);
+    console.error('❌ ERRO na lógica final correta:', error);
     throw error;
   }
 }
@@ -779,14 +842,14 @@ async function syncWithBubble(csvData, gorduraValor) {
     console.log('📊 Resultados da sincronização:', results);
     
     // === ESTA É A ÚLTIMA COISA QUE O CÓDIGO FAZ ===
-    // === EXECUTAR A LÓGICA FINAL EXATAMENTE COMO ESPECIFICADO ===
-    console.log('\n🔥 EXECUTANDO LÓGICA FINAL - ÚLTIMA COISA DO CÓDIGO!');
-    const logicaFinalResults = await executarLogicaFinal();
-    console.log('🔥 Lógica final concluída:', logicaFinalResults);
+    // === EXECUTAR A LÓGICA FINAL CORRETA ===
+    console.log('\n🔥 EXECUTANDO LÓGICA FINAL CORRETA - ÚLTIMA COISA DO CÓDIGO!');
+    const logicaFinalResults = await executarLogicaFinalCorreta();
+    console.log('🔥 Lógica final correta concluída:', logicaFinalResults);
     
     return {
       ...results,
-      logica_final: logicaFinalResults
+      logica_final_correta: logicaFinalResults
     };
     
   } catch (error) {
@@ -880,30 +943,30 @@ app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
   }
 });
 
-// Rota para EXECUTAR LÓGICA FINAL
+// Rota para EXECUTAR LÓGICA FINAL CORRETA
 app.post('/force-recalculate', async (req, res) => {
   try {
-    console.log('\n🔥 === EXECUTANDO LÓGICA FINAL MANUALMENTE ===');
+    console.log('\n🔥 === EXECUTANDO LÓGICA FINAL CORRETA MANUALMENTE ===');
     
     const startTime = Date.now();
-    const results = await executarLogicaFinal();
+    const results = await executarLogicaFinalCorreta();
     const endTime = Date.now();
     const processingTime = (endTime - startTime) / 1000;
     
-    console.log(`🔥 Lógica final executada em ${processingTime}s`);
+    console.log(`🔥 Lógica final correta executada em ${processingTime}s`);
     
     res.json({
       success: true,
-      message: 'LÓGICA FINAL executada com sucesso',
+      message: 'LÓGICA FINAL CORRETA executada com sucesso',
       tempo_processamento: processingTime + 's',
       resultados: results,
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
-    console.error('❌ Erro na lógica final:', error);
+    console.error('❌ Erro na lógica final correta:', error);
     res.status(500).json({
-      error: 'Erro na LÓGICA FINAL',
+      error: 'Erro na LÓGICA FINAL CORRETA',
       details: error.message,
       timestamp: new Date().toISOString()
     });
