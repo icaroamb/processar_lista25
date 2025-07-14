@@ -226,7 +226,7 @@ async function updateInBubble(tableName, itemId, data) {
   });
 }
 
-// FUNÇÃO FINAL CORRETA - SEM LOOP INFINITO
+// FUNÇÃO FINAL CORRETA - COM PROCESSAMENTO EM LOTES PARA ALTA VELOCIDADE
 async function executarLogicaFinalCorreta() {
   console.log('\n🔥 === EXECUTANDO LÓGICA FINAL CORRETA (ÚLTIMA COISA) ===');
   
@@ -287,101 +287,116 @@ async function executarLogicaFinalCorreta() {
     const produtoIds = Object.keys(grupos);
     console.log(`📊 Produtos agrupados: ${produtoIds.length}`);
     
-    let produtosEditados = 0;
-    let itensEditados = 0;
-    
-    // 3. Para CADA produto agrupado, calcular e EDITAR na tabela "1 - produtos_25marco"
-    console.log('📊 3. Calculando e editando produtos...');
+    // 3. PREPARAR OPERAÇÕES EM LOTES PARA ALTA VELOCIDADE
+    console.log('📊 3. Preparando operações em lotes...');
+    const operacoesProdutos = [];
+    const operacoesMelhorPreco = [];
     
     for (const produtoId of produtoIds) {
       const grupo = grupos[produtoId];
-      console.log(`\n📦 Produto ID: ${produtoId} (${grupo.length} itens no grupo)`);
       
       // Extrair preco_final de todos os itens do grupo
       const precosFinal = grupo.map(item => item.preco_final);
-      console.log(`💰 Preços finais: [${precosFinal.join(', ')}]`);
       
       // CALCULAR conforme especificado:
-      
-      // qtd_fornecedores = quantidade de itens do grupo
       const qtd_fornecedores = grupo.length;
-      
-      // menor_preco = o menor valor de "preco_final" do grupo  
       const menor_preco = Math.min(...precosFinal);
-      
-      // media_preco = soma de todos os "preco_final" / qtd_fornecedores
       const soma = precosFinal.reduce((a, b) => a + b, 0);
       const preco_medio = Math.round((soma / qtd_fornecedores) * 100) / 100;
-      
-      // fornecedor_menor_preco = valor do campo "fornecedor" do item com menor preço
       const itemComMenorPreco = grupo.find(item => item.preco_final === menor_preco);
       const fornecedor_menor_preco = itemComMenorPreco.fornecedor;
       
-      console.log(`📊 Valores calculados:`);
-      console.log(`   qtd_fornecedores: ${qtd_fornecedores}`);
-      console.log(`   menor_preco: ${menor_preco}`);
-      console.log(`   preco_medio: ${preco_medio}`);
-      console.log(`   fornecedor_menor_preco: ${fornecedor_menor_preco}`);
-      
-      // EDITAR na tabela "1 - produtos_25marco" onde _id === produtoId
-      try {
-        await updateInBubble('1 - produtos_25marco', produtoId, {
+      // PREPARAR operação para produto
+      operacoesProdutos.push({
+        produtoId: produtoId,
+        dados: {
           qtd_fornecedores: qtd_fornecedores,
           menor_preco: menor_preco,
           preco_medio: preco_medio,
           fornecedor_menor_preco: fornecedor_menor_preco
-        });
-        
-        produtosEditados++;
-        console.log(`✅ Produto ${produtoId} EDITADO na tabela produtos_25marco`);
-        
-      } catch (error) {
-        console.error(`❌ ERRO ao editar produto ${produtoId}:`, error.message);
-      }
+        },
+        debug: {
+          grupo_size: grupo.length,
+          precos: precosFinal
+        }
+      });
       
-      // 4. Para cada item do grupo - editar melhor_preco na tabela "1 - ProdutoFornecedor_25marco"
-      for (const item of grupo) {
-        // melhor_preco = yes SOMENTE para o item cujo preco_final seja o menor
-        // Os que não forem o melhor_preco, recebem no
+      // PREPARAR operações para melhor_preco
+      grupo.forEach(item => {
         const melhor_preco = (item.preco_final === menor_preco) ? 'yes' : 'no';
         
-        try {
-          await updateInBubble('1 - ProdutoFornecedor _25marco', item._id, {
-            melhor_preco: melhor_preco
-          });
-          
-          itensEditados++;
-          console.log(`🏷️ Item ${item._id}: melhor_preco=${melhor_preco} (preço: ${item.preco_final}, menor: ${menor_preco})`);
-          
-        } catch (error) {
-          console.error(`❌ ERRO ao editar item ${item._id}:`, error.message);
-        }
-        
-        await delay(50); // Delay entre itens
-      }
-      
-      await delay(100); // Delay entre produtos
+        operacoesMelhorPreco.push({
+          itemId: item._id,
+          melhor_preco: melhor_preco,
+          debug: {
+            preco_item: item.preco_final,
+            menor_preco_grupo: menor_preco
+          }
+        });
+      });
     }
     
-    // 5. Garantir que itens com preço 0 ou vazio tenham melhor_preco = no
-    console.log('\n🧹 5. Garantindo melhor_preco=no para preços inválidos...');
+    console.log(`📊 Operações preparadas:`);
+    console.log(`   Produtos para editar: ${operacoesProdutos.length}`);
+    console.log(`   Itens melhor_preco para editar: ${operacoesMelhorPreco.length}`);
+    
+    // 4. EXECUTAR OPERAÇÕES DOS PRODUTOS EM LOTES
+    console.log('\n📦 4. Editando produtos em lotes...');
+    const { results: produtoResults, errors: produtoErrors } = await processBatch(
+      operacoesProdutos,
+      async (operacao) => {
+        console.log(`📦 Editando produto ${operacao.produtoId}: qtd=${operacao.dados.qtd_fornecedores}, menor=${operacao.dados.menor_preco}, media=${operacao.dados.preco_medio}`);
+        
+        return await updateInBubble('1 - produtos_25marco', operacao.produtoId, operacao.dados);
+      }
+    );
+    
+    const produtosEditados = produtoResults.filter(r => r.success).length;
+    console.log(`✅ Produtos editados: ${produtosEditados}/${operacoesProdutos.length}`);
+    
+    // 5. EXECUTAR OPERAÇÕES DE MELHOR_PRECO EM LOTES
+    console.log('\n🏷️ 5. Editando melhor_preco em lotes...');
+    const { results: melhorPrecoResults, errors: melhorPrecoErrors } = await processBatch(
+      operacoesMelhorPreco,
+      async (operacao) => {
+        console.log(`🏷️ Item ${operacao.itemId}: melhor_preco=${operacao.melhor_preco} (${operacao.debug.preco_item} vs ${operacao.debug.menor_preco_grupo})`);
+        
+        return await updateInBubble('1 - ProdutoFornecedor _25marco', operacao.itemId, {
+          melhor_preco: operacao.melhor_preco
+        });
+      }
+    );
+    
+    const itensEditados = melhorPrecoResults.filter(r => r.success).length;
+    console.log(`✅ Itens melhor_preco editados: ${itensEditados}/${operacoesMelhorPreco.length}`);
+    
+    // 6. GARANTIR QUE ITENS INVÁLIDOS TENHAM MELHOR_PRECO = NO (EM LOTES)
+    console.log('\n🧹 6. Garantindo melhor_preco=no para preços inválidos (em lotes)...');
     const itensInvalidos = todosOsItens.filter(item => !item.preco_final || item.preco_final <= 0);
     
     let itensInvalidosEditados = 0;
-    for (const item of itensInvalidos) {
-      try {
-        await updateInBubble('1 - ProdutoFornecedor _25marco', item._id, {
-          melhor_preco: 'no'
-        });
-        
-        itensInvalidosEditados++;
-        console.log(`🧹 Item ${item._id}: melhor_preco=no (preço inválido: ${item.preco_final})`);
-        
-      } catch (error) {
-        console.error(`❌ ERRO ao editar item inválido ${item._id}:`, error.message);
-      }
+    
+    if (itensInvalidos.length > 0) {
+      console.log(`🧹 Encontrados ${itensInvalidos.length} itens com preços inválidos`);
       
-      await delay(50);
+      const operacoesInvalidos = itensInvalidos.map(item => ({
+        itemId: item._id,
+        preco_invalido: item.preco_final
+      }));
+      
+      const { results: invalidosResults, errors: invalidosErrors } = await processBatch(
+        operacoesInvalidos,
+        async (operacao) => {
+          console.log(`🧹 Item ${operacao.itemId}: melhor_preco=no (preço inválido: ${operacao.preco_invalido})`);
+          
+          return await updateInBubble('1 - ProdutoFornecedor _25marco', operacao.itemId, {
+            melhor_preco: 'no'
+          });
+        }
+      );
+      
+      itensInvalidosEditados = invalidosResults.filter(r => r.success).length;
+      console.log(`✅ Itens inválidos editados: ${itensInvalidosEditados}/${itensInvalidos.length}`);
     }
     
     const resultados = {
@@ -391,10 +406,14 @@ async function executarLogicaFinalCorreta() {
       itens_editados: itensEditados,
       itens_invalidos: itensInvalidos.length,
       itens_invalidos_editados: itensInvalidosEditados,
+      erros: {
+        produtos: produtoErrors.length,
+        melhor_preco: melhorPrecoErrors.length
+      },
       sucesso: true
     };
     
-    console.log('\n🔥 === LÓGICA FINAL CORRETA CONCLUÍDA ===');
+    console.log('\n🔥 === LÓGICA FINAL CORRETA CONCLUÍDA (COM LOTES) ===');
     console.log('📊 RESULTADOS:', resultados);
     
     return resultados;
