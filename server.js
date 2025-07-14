@@ -504,45 +504,30 @@ async function syncWithBubble(csvData, gorduraValor) {
     
     // 4. EXECUTAR OPERAÇÕES EM LOTES
     
-    // 4.1 Criar fornecedores em lotes - COM VERIFICAÇÃO DE DUPLICAÇÃO
+    // 4.1 Criar fornecedores em lotes - SEM CONSTRAINTS PROBLEMÁTICAS
     if (operacoesFornecedores.length > 0) {
       console.log('\n👥 Criando fornecedores...');
       
-      // Verificar se fornecedores já existem antes de criar
+      // Buscar TODOS os fornecedores existentes de uma vez
+      const fornecedoresExistentes = await fetchAllFromBubble('1 - fornecedor_25marco');
+      const fornecedoresExistentesMap = new Map();
+      fornecedoresExistentes.forEach(f => fornecedoresExistentesMap.set(f.nome_fornecedor, f));
+      
       const fornecedoresParaCriar = [];
       
       for (const operacao of operacoesFornecedores) {
-        // Verificação dupla: no mapa local E busca no Bubble
-        if (!fornecedorMap.has(operacao.nome)) {
-          // Buscar no Bubble para garantir que não existe
-          try {
-            const fornecedorExistente = await fetchAllFromBubble('1 - fornecedor_25marco', {
-              'constraints': [{
-                'key': 'nome_fornecedor',
-                'constraint_type': 'equals',
-                'value': operacao.nome
-              }]
-            });
-            
-            if (fornecedorExistente.length === 0) {
-              fornecedoresParaCriar.push(operacao);
-            } else {
-              // Fornecedor já existe, adicionar ao mapa
-              const fornecedor = fornecedorExistente[0];
-              fornecedorMap.set(operacao.nome, {
-                _id: fornecedor._id,
-                nome_fornecedor: fornecedor.nome_fornecedor
-              });
-              console.log(`📋 Fornecedor ${operacao.nome} já existe, pulando criação`);
-            }
-          } catch (error) {
-            console.warn(`⚠️ Erro ao verificar fornecedor ${operacao.nome}:`, error.message);
-            fornecedoresParaCriar.push(operacao); // Em caso de erro, tentar criar
-          }
+        // Verificação no mapa de fornecedores existentes
+        if (!fornecedorMap.has(operacao.nome) && !fornecedoresExistentesMap.has(operacao.nome)) {
+          fornecedoresParaCriar.push(operacao);
+        } else if (fornecedoresExistentesMap.has(operacao.nome)) {
+          // Fornecedor já existe, adicionar ao mapa local
+          const fornecedor = fornecedoresExistentesMap.get(operacao.nome);
+          fornecedorMap.set(operacao.nome, {
+            _id: fornecedor._id,
+            nome_fornecedor: fornecedor.nome_fornecedor
+          });
+          console.log(`📋 Fornecedor ${operacao.nome} já existe, pulando criação`);
         }
-        
-        // Pequeno delay para evitar sobrecarga
-        await delay(10);
       }
       
       console.log(`👥 Fornecedores únicos para criar: ${fornecedoresParaCriar.length} de ${operacoesFornecedores.length}`);
@@ -569,46 +554,31 @@ async function syncWithBubble(csvData, gorduraValor) {
       }
     }
     
-    // 4.2 Criar produtos em lotes - COM VERIFICAÇÃO DE DUPLICAÇÃO
+    // 4.2 Criar produtos em lotes - SEM CONSTRAINTS PROBLEMÁTICAS
     if (operacoesProdutos.length > 0) {
       console.log('\n📦 Criando produtos...');
       
-      // Verificar se produtos já existem antes de criar
+      // Buscar TODOS os produtos existentes de uma vez
+      const produtosExistentes = await fetchAllFromBubble('1 - produtos_25marco');
+      const produtosExistentesMap = new Map();
+      produtosExistentes.forEach(p => produtosExistentesMap.set(p.id_planilha, p));
+      
       const produtosParaCriar = [];
       
       for (const operacao of operacoesProdutos) {
-        // Verificação dupla: no mapa local E busca no Bubble
-        if (!produtoMap.has(operacao.codigo)) {
-          // Buscar no Bubble para garantir que não existe
-          try {
-            const produtoExistente = await fetchAllFromBubble('1 - produtos_25marco', {
-              'constraints': [{
-                'key': 'id_planilha',
-                'constraint_type': 'equals',
-                'value': operacao.codigo
-              }]
-            });
-            
-            if (produtoExistente.length === 0) {
-              produtosParaCriar.push(operacao);
-            } else {
-              // Produto já existe, adicionar ao mapa
-              const produto = produtoExistente[0];
-              produtoMap.set(operacao.codigo, {
-                _id: produto._id,
-                id_planilha: produto.id_planilha,
-                nome_completo: produto.nome_completo
-              });
-              console.log(`📋 Produto ${operacao.codigo} já existe, pulando criação`);
-            }
-          } catch (error) {
-            console.warn(`⚠️ Erro ao verificar produto ${operacao.codigo}:`, error.message);
-            produtosParaCriar.push(operacao); // Em caso de erro, tentar criar
-          }
+        // Verificação no mapa de produtos existentes
+        if (!produtoMap.has(operacao.codigo) && !produtosExistentesMap.has(operacao.codigo)) {
+          produtosParaCriar.push(operacao);
+        } else if (produtosExistentesMap.has(operacao.codigo)) {
+          // Produto já existe, adicionar ao mapa local
+          const produto = produtosExistentesMap.get(operacao.codigo);
+          produtoMap.set(operacao.codigo, {
+            _id: produto._id,
+            id_planilha: produto.id_planilha,
+            nome_completo: produto.nome_completo
+          });
+          console.log(`📋 Produto ${operacao.codigo} já existe, pulando criação`);
         }
-        
-        // Pequeno delay para evitar sobrecarga
-        await delay(10);
       }
       
       console.log(`📦 Produtos únicos para criar: ${produtosParaCriar.length} de ${operacoesProdutos.length}`);
@@ -969,60 +939,34 @@ app.get('/stats', async (req, res) => {
   }
 });
 
-// Rota para buscar produto específico - COM DEBUGGING
+// Rota para buscar produto específico - CORRIGIDA SEM CONSTRAINTS
 app.get('/produto/:codigo', async (req, res) => {
   try {
     const codigo = req.params.codigo;
     console.log(`🔍 Buscando produto: ${codigo}`);
     
-    const produtos = await fetchAllFromBubble('1 - produtos_25marco', {
-      'constraints': [{
-        'key': 'id_planilha',
-        'constraint_type': 'equals',
-        'value': codigo
-      }]
-    });
+    // Buscar TODOS os produtos e filtrar localmente
+    const todosProdutos = await fetchAllFromBubble('1 - produtos_25marco');
+    const produto = todosProdutos.find(p => p.id_planilha === codigo);
     
-    if (produtos.length === 0) {
+    if (!produto) {
       return res.status(404).json({
         error: 'Produto não encontrado'
       });
     }
     
-    const produto = produtos[0];
     console.log(`📦 Produto encontrado:`, produto);
     
-    // Buscar relações do produto
-    const relacoes = await fetchAllFromBubble('1 - ProdutoFornecedor _25marco', {
-      'constraints': [{
-        'key': 'produto',
-        'constraint_type': 'equals',
-        'value': produto._id
-      }]
-    });
+    // Buscar TODAS as relações e filtrar localmente
+    const todasRelacoes = await fetchAllFromBubble('1 - ProdutoFornecedor _25marco');
+    const relacoes = todasRelacoes.filter(r => r.produto === produto._id);
     
     console.log(`🔗 Relações encontradas: ${relacoes.length}`);
     
-    // Buscar fornecedores das relações
-    const fornecedorIds = [...new Set(relacoes.map(r => r.fornecedor))];
-    console.log(`👥 IDs de fornecedores: [${fornecedorIds.join(', ')}]`);
-    
-    const fornecedoresPromises = fornecedorIds.map(async (id) => {
-      const fornecedores = await fetchAllFromBubble('1 - fornecedor_25marco', {
-        'constraints': [{
-          'key': '_id',
-          'constraint_type': 'equals',
-          'value': id
-        }]
-      });
-      return fornecedores[0];
-    });
-    
-    const fornecedoresList = await Promise.all(fornecedoresPromises);
+    // Buscar TODOS os fornecedores e filtrar localmente
+    const todosFornecedores = await fetchAllFromBubble('1 - fornecedor_25marco');
     const fornecedorMap = new Map();
-    fornecedoresList.forEach(f => {
-      if (f) fornecedorMap.set(f._id, f);
-    });
+    todosFornecedores.forEach(f => fornecedorMap.set(f._id, f));
     
     console.log(`👥 Fornecedores carregados: ${fornecedorMap.size}`);
     
