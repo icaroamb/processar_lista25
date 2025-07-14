@@ -50,6 +50,50 @@ const upload = multer({
   }
 });
 
+// ================ SISTEMA DE CONTROLE DE PROCESSAMENTO ================
+
+// Armazena o status dos processamentos em memória
+const processamentos = new Map();
+
+// Função para gerar ID único do processamento
+function generateProcessId() {
+  return `proc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+// Função para atualizar status do processamento
+function updateProcessStatus(processId, status, data = {}) {
+  const now = new Date().toISOString();
+  
+  if (!processamentos.has(processId)) {
+    processamentos.set(processId, {
+      id: processId,
+      status: 'iniciado',
+      inicio: now,
+      etapas: []
+    });
+  }
+  
+  const processo = processamentos.get(processId);
+  processo.status = status;
+  processo.ultima_atualizacao = now;
+  
+  // Adicionar dados específicos do status
+  Object.assign(processo, data);
+  
+  // Adicionar etapa ao histórico
+  processo.etapas.push({
+    timestamp: now,
+    status: status,
+    ...data
+  });
+  
+  console.log(`📊 [${processId}] Status: ${status}`);
+  
+  return processo;
+}
+
+// ================ FUNÇÕES ORIGINAIS (mantidas iguais) ================
+
 // Função para extrair preço numérico
 function extractPrice(priceString) {
   if (!priceString || priceString.toString().trim() === '') return 0;
@@ -166,10 +210,16 @@ function calculateProductStats(produtoFornecedores) {
   return { qtd_fornecedores, menor_preco, preco_medio };
 }
 
-// Função para processar o CSV
-function processCSV(filePath) {
+// Função para processar o CSV (agora com processId)
+function processCSV(filePath, processId = null) {
   return new Promise((resolve, reject) => {
     try {
+      if (processId) {
+        updateProcessStatus(processId, 'processando_csv', { 
+          etapa: 'Lendo arquivo CSV' 
+        });
+      }
+      
       console.log('📁 Lendo arquivo CSV...');
       
       const fileContent = fs.readFileSync(filePath, 'utf8');
@@ -183,6 +233,12 @@ function processCSV(filePath) {
       // Pular as duas primeiras linhas (cabeçalhos)
       const dataLines = lines.slice(2);
       console.log(`📊 Processando ${dataLines.length} linhas de dados`);
+      
+      if (processId) {
+        updateProcessStatus(processId, 'processando_csv', { 
+          etapa: `Processando ${dataLines.length} linhas de dados` 
+        });
+      }
       
       // Configuração das lojas com índices das colunas
       const lojasConfig = [
@@ -239,22 +295,51 @@ function processCSV(filePath) {
         }
       });
       
+      if (processId) {
+        updateProcessStatus(processId, 'csv_processado', { 
+          etapa: 'CSV processado com sucesso',
+          total_lojas: processedData.length,
+          total_produtos: processedData.reduce((acc, loja) => acc + loja.total_produtos, 0)
+        });
+      }
+      
       resolve(processedData);
       
     } catch (error) {
       console.error('❌ Erro no processamento do CSV:', error);
+      
+      if (processId) {
+        updateProcessStatus(processId, 'erro', { 
+          etapa: 'Erro no processamento do CSV',
+          erro: error.message 
+        });
+      }
+      
       reject(error);
     }
   });
 }
 
-// Função principal para sincronizar com o Bubble
-async function syncWithBubble(csvData, gorduraValor) {
+// Função principal para sincronizar com o Bubble (agora com processId)
+async function syncWithBubble(csvData, gorduraValor, processId = null) {
   try {
     console.log('\n🔄 Iniciando sincronização com Bubble...');
     
+    if (processId) {
+      updateProcessStatus(processId, 'sincronizando_bubble', { 
+        etapa: 'Iniciando sincronização com Bubble' 
+      });
+    }
+    
     // 1. CARREGAR DADOS EXISTENTES
     console.log('📊 Carregando dados existentes...');
+    
+    if (processId) {
+      updateProcessStatus(processId, 'sincronizando_bubble', { 
+        etapa: 'Carregando dados existentes do Bubble' 
+      });
+    }
+    
     const [fornecedores, produtos, produtoFornecedores] = await Promise.all([
       fetchAllFromBubble('1 - fornecedor_25marco'),
       fetchAllFromBubble('1 - produtos_25marco'),
@@ -281,8 +366,20 @@ async function syncWithBubble(csvData, gorduraValor) {
     // 3. PROCESSAR PRODUTOS DO CSV
     console.log('\n📝 Processando produtos do CSV...');
     
+    if (processId) {
+      updateProcessStatus(processId, 'sincronizando_bubble', { 
+        etapa: 'Processando produtos do CSV' 
+      });
+    }
+    
     for (const lojaData of csvData) {
       console.log(`\n🏪 Processando ${lojaData.loja}...`);
+      
+      if (processId) {
+        updateProcessStatus(processId, 'sincronizando_bubble', { 
+          etapa: `Processando ${lojaData.loja}` 
+        });
+      }
       
       // 3.1 Verificar/criar fornecedor
       let fornecedor = fornecedorMap.get(lojaData.loja);
@@ -357,6 +454,12 @@ async function syncWithBubble(csvData, gorduraValor) {
     // 4. ZERAR PRODUTOS NÃO COTADOS (COTAÇÃO DIÁRIA)
     console.log('\n🧹 Aplicando lógica de cotação diária...');
     
+    if (processId) {
+      updateProcessStatus(processId, 'sincronizando_bubble', { 
+        etapa: 'Aplicando lógica de cotação diária' 
+      });
+    }
+    
     for (const lojaData of csvData) {
       const fornecedor = fornecedorMap.get(lojaData.loja);
       if (!fornecedor) continue;
@@ -400,6 +503,12 @@ async function syncWithBubble(csvData, gorduraValor) {
     // 5. RECALCULAR ESTATÍSTICAS DOS PRODUTOS
     console.log('\n📊 Recalculando estatísticas dos produtos...');
     
+    if (processId) {
+      updateProcessStatus(processId, 'sincronizando_bubble', { 
+        etapa: 'Recalculando estatísticas dos produtos' 
+      });
+    }
+    
     // Recarregar dados atualizados
     const produtoFornecedoresAtualizados = await fetchAllFromBubble('1 - ProdutoFornecedor _25marco');
     
@@ -437,24 +546,84 @@ async function syncWithBubble(csvData, gorduraValor) {
     console.log('\n✅ Sincronização concluída!');
     console.log('📊 Resultados:', results);
     
+    if (processId) {
+      updateProcessStatus(processId, 'concluido', { 
+        etapa: 'Sincronização concluída com sucesso',
+        resultados: results
+      });
+    }
+    
     return results;
     
   } catch (error) {
     console.error('❌ Erro na sincronização:', error);
+    
+    if (processId) {
+      updateProcessStatus(processId, 'erro', { 
+        etapa: 'Erro na sincronização',
+        erro: error.message 
+      });
+    }
+    
     throw error;
   }
 }
 
-// ROTAS DA API
+// ================ FUNÇÃO DE PROCESSAMENTO ASSÍNCRONO ================
 
-// Rota principal para upload e processamento
+async function processarAsync(filePath, gorduraValor, processId) {
+  try {
+    console.log(`🚀 [${processId}] Iniciando processamento assíncrono...`);
+    
+    // Processar o CSV
+    const csvData = await processCSV(filePath, processId);
+    
+    // Sincronizar com Bubble
+    const syncResults = await syncWithBubble(csvData, gorduraValor, processId);
+    
+    // Limpar arquivo temporário
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+      console.log(`🗑️ [${processId}] Arquivo temporário removido`);
+    }
+    
+    updateProcessStatus(processId, 'finalizado', {
+      etapa: 'Processamento finalizado com sucesso',
+      dados_csv: csvData,
+      resultados_sincronizacao: syncResults,
+      fim: new Date().toISOString()
+    });
+    
+    console.log(`✅ [${processId}] Processamento concluído com sucesso`);
+    
+  } catch (error) {
+    console.error(`❌ [${processId}] Erro no processamento:`, error);
+    
+    // Limpar arquivo temporário em caso de erro
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+    
+    updateProcessStatus(processId, 'erro', {
+      etapa: 'Erro no processamento',
+      erro: error.message,
+      fim: new Date().toISOString()
+    });
+  }
+}
+
+// ================ ROTAS DA API ================
+
+// Rota principal para upload e processamento ASSÍNCRONO
 app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
   try {
-    console.log('\n🚀 === NOVA REQUISIÇÃO ===');
+    console.log('\n🚀 === NOVA REQUISIÇÃO ASSÍNCRONA ===');
     console.log('📤 Arquivo:', req.file ? req.file.originalname : 'Nenhum');
     
+    // Validações iniciais
     if (!req.file) {
       return res.status(400).json({ 
+        success: false,
         error: 'Nenhum arquivo CSV foi enviado' 
       });
     }
@@ -463,54 +632,118 @@ app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
     const gorduraValor = parseFloat(req.body.gordura_valor);
     if (isNaN(gorduraValor)) {
       return res.status(400).json({
+        success: false,
         error: 'Parâmetro gordura_valor é obrigatório e deve ser um número'
       });
     }
-    
-    console.log('💰 Gordura valor:', gorduraValor);
     
     const filePath = req.file.path;
     
     if (!fs.existsSync(filePath)) {
       return res.status(400).json({ 
+        success: false,
         error: 'Arquivo não encontrado' 
       });
     }
     
-    // Processar o CSV
-    const csvData = await processCSV(filePath);
+    // Gerar ID único para o processamento
+    const processId = generateProcessId();
     
-    // Sincronizar com Bubble
-    const syncResults = await syncWithBubble(csvData, gorduraValor);
+    console.log(`💰 Gordura valor: ${gorduraValor}`);
+    console.log(`🆔 Process ID: ${processId}`);
     
-    // Limpar arquivo temporário
-    fs.unlinkSync(filePath);
-    console.log('🗑️ Arquivo temporário removido');
+    // Inicializar status do processamento
+    updateProcessStatus(processId, 'iniciado', {
+      arquivo: req.file.originalname,
+      gordura_valor: gorduraValor,
+      inicio: new Date().toISOString()
+    });
     
-    console.log('✅ Processamento concluído com sucesso');
+    // Iniciar processamento assíncrono (não esperar)
+    processarAsync(filePath, gorduraValor, processId);
     
-    // Retornar resultado
+    // Retornar resposta imediata
     res.json({
       success: true,
-      message: 'CSV processado e sincronizado com sucesso',
+      message: 'Processamento iniciado',
+      process_id: processId,
+      arquivo: req.file.originalname,
       gordura_valor: gorduraValor,
-      dados_csv: csvData,
-      resultados_sincronizacao: syncResults
+      status: 'iniciado',
+      status_url: `/process-status/${processId}`
     });
     
   } catch (error) {
-    console.error('❌ Erro ao processar CSV:', error);
+    console.error('❌ Erro ao iniciar processamento:', error);
     
+    // Limpar arquivo em caso de erro
     if (req.file && fs.existsSync(req.file.path)) {
       fs.unlinkSync(req.file.path);
     }
     
     res.status(500).json({ 
+      success: false,
       error: 'Erro interno do servidor',
       details: error.message 
     });
   }
 });
+
+// Nova rota para consultar status do processamento
+app.get('/process-status/:processId', (req, res) => {
+  const processId = req.params.processId;
+  
+  if (!processamentos.has(processId)) {
+    return res.status(404).json({
+      success: false,
+      error: 'Processamento não encontrado'
+    });
+  }
+  
+  const processo = processamentos.get(processId);
+  
+  res.json({
+    success: true,
+    process: processo
+  });
+});
+
+// Rota para listar todos os processamentos
+app.get('/process-list', (req, res) => {
+  const lista = Array.from(processamentos.values())
+    .sort((a, b) => new Date(b.inicio) - new Date(a.inicio))
+    .slice(0, 50); // Últimos 50 processamentos
+  
+  res.json({
+    success: true,
+    total: processamentos.size,
+    processamentos: lista
+  });
+});
+
+// Rota para limpar processamentos antigos
+app.delete('/process-cleanup', (req, res) => {
+  const agora = new Date();
+  const umDiaAtras = new Date(agora.getTime() - 24 * 60 * 60 * 1000);
+  
+  let removidos = 0;
+  
+  for (const [processId, processo] of processamentos) {
+    const inicioProcesso = new Date(processo.inicio);
+    if (inicioProcesso < umDiaAtras) {
+      processamentos.delete(processId);
+      removidos++;
+    }
+  }
+  
+  res.json({
+    success: true,
+    message: `${removidos} processamentos removidos`,
+    restantes: processamentos.size
+  });
+});
+
+// ================ ROTAS ORIGINAIS (mantidas) ================
 
 // Rota para buscar estatísticas
 app.get('/stats', async (req, res) => {
@@ -579,7 +812,8 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     message: 'API funcionando corretamente',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    processamentos_ativos: processamentos.size
   });
 });
 
@@ -621,9 +855,12 @@ app.get('/test-bubble', async (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     message: 'API para processamento de CSV de produtos com integração Bubble',
-    version: '3.0.0',
+    version: '3.1.0 - Processamento Assíncrono',
     endpoints: {
-      'POST /process-csv': 'Envia arquivo CSV com parâmetro gordura_valor e sincroniza com Bubble',
+      'POST /process-csv': 'Envia arquivo CSV com parâmetro gordura_valor e inicia processamento assíncrono',
+      'GET /process-status/:processId': 'Consulta status de um processamento específico',
+      'GET /process-list': 'Lista todos os processamentos (últimos 50)',
+      'DELETE /process-cleanup': 'Remove processamentos antigos (mais de 24h)',
       'GET /stats': 'Retorna estatísticas das tabelas',
       'GET /produto/:codigo': 'Busca produto específico por código',
       'GET /health': 'Verifica status da API',
@@ -633,12 +870,19 @@ app.get('/', (req, res) => {
       'gordura_valor': 'number - Valor a ser adicionado ao preço original'
     },
     funcionalidades: [
+      'Processamento assíncrono de CSV',
+      'Acompanhamento de status em tempo real',
       'Processamento de CSV com layout horizontal',
       'Cotação diária completa (zera produtos não cotados)',
       'Cálculos baseados no preço final (com margem)',
       'Identificação automática do melhor preço',
       'Sincronização inteligente com Bubble'
-    ]
+    ],
+    exemplo_uso: {
+      '1_enviar_csv': 'POST /process-csv com arquivo e gordura_valor',
+      '2_receber_process_id': 'API retorna imediatamente com process_id',
+      '3_consultar_status': 'GET /process-status/{process_id} para acompanhar'
+    }
   });
 });
 
@@ -647,6 +891,7 @@ app.use((error, req, res, next) => {
   if (error instanceof multer.MulterError) {
     if (error.code === 'LIMIT_FILE_SIZE') {
       return res.status(400).json({ 
+        success: false,
         error: 'Arquivo muito grande (máximo 10MB)' 
       });
     }
@@ -654,12 +899,14 @@ app.use((error, req, res, next) => {
   
   if (error.message === 'Apenas arquivos CSV são permitidos!') {
     return res.status(400).json({ 
+      success: false,
       error: 'Apenas arquivos CSV são permitidos' 
     });
   }
   
   console.error('Erro não tratado:', error);
   res.status(500).json({ 
+    success: false,
     error: 'Erro interno do servidor' 
   });
 });
@@ -669,7 +916,11 @@ app.listen(PORT, () => {
   console.log(`🚀 Servidor rodando na porta ${PORT}`);
   console.log(`📊 Acesse: http://localhost:${PORT}`);
   console.log(`🔗 Integração Bubble configurada`);
-  console.log(`✨ Versão 3.0.0 - Código reescrito do zero`);
+  console.log(`✨ Versão 3.1.0 - Processamento Assíncrono`);
+  console.log(`🔄 Endpoints para acompanhar processamento:`);
+  console.log(`   - POST /process-csv (inicia processamento)`);
+  console.log(`   - GET /process-status/:id (consulta status)`);
+  console.log(`   - GET /process-list (lista todos)`);
 });
 
 module.exports = app;
