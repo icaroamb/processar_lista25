@@ -226,19 +226,19 @@ async function updateInBubble(tableName, itemId, data) {
   });
 }
 
-// FUNÇÃO FINAL CORRETA - EXATAMENTE COMO ESPECIFICADO
+// FUNÇÃO FINAL CORRETA - SEM LOOP INFINITO
 async function executarLogicaFinalCorreta() {
   console.log('\n🔥 === EXECUTANDO LÓGICA FINAL CORRETA (ÚLTIMA COISA) ===');
   
   try {
-    // 1. Buscar TODOS os itens da tabela "1 - ProdutoFornecedor_25marco" COM PAGINAÇÃO
+    // 1. Buscar TODOS os itens da tabela "1 - ProdutoFornecedor_25marco" COM PAGINAÇÃO CORRETA
     console.log('📊 1. Buscando TODOS os itens da tabela "1 - ProdutoFornecedor_25marco"...');
     
     let todosOsItens = [];
     let cursor = 0;
-    let hasMore = true;
+    let remaining = 1; // Iniciar com 1 para entrar no loop
     
-    while (hasMore) {
+    while (remaining > 0) {
       console.log(`📊 Buscando página com cursor: ${cursor}`);
       
       const response = await axios.get(`${BUBBLE_CONFIG.baseURL}/1 - ProdutoFornecedor _25marco`, {
@@ -254,12 +254,14 @@ async function executarLogicaFinalCorreta() {
       }
       
       todosOsItens = todosOsItens.concat(data.response.results);
-      hasMore = data.response.remaining > 0;
-      cursor = data.response.cursor || (cursor + 100);
+      remaining = data.response.remaining || 0;
       
-      console.log(`📊 Página carregada: ${data.response.results.length} itens (remaining: ${data.response.remaining})`);
+      console.log(`📊 Página carregada: ${data.response.results.length} itens (remaining: ${remaining})`);
       
-      if (hasMore) {
+      // INCREMENTAR CURSOR DE 100 EM 100
+      cursor += 100;
+      
+      if (remaining > 0) {
         await delay(50); // Delay entre páginas
       }
     }
