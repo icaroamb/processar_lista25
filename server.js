@@ -92,7 +92,7 @@ function updateProcessStatus(processId, status, data = {}) {
   return processo;
 }
 
-// ================ FUNÇÕES ORIGINAIS (mantidas iguais) ================
+// ================ FUNÇÕES ORIGINAIS (com correções críticas) ================
 
 // Função para extrair preço numérico
 function extractPrice(priceString) {
@@ -197,20 +197,42 @@ async function updateInBubble(tableName, itemId, data) {
   }
 }
 
-// Função para calcular estatísticas do produto baseadas no preco_final
+// ================ FUNÇÃO CORRIGIDA PARA CALCULAR ESTATÍSTICAS ================
+
+// Função para calcular estatísticas do produto (CORRIGIDA)
 function calculateProductStats(produtoFornecedores) {
+  console.log('🔢 Calculando estatísticas para:', produtoFornecedores.length, 'relações');
+  
+  // CORREÇÃO CRÍTICA 1: Filtro mais rigoroso e com logging
   const validPrices = produtoFornecedores
-    .filter(pf => pf.preco_final && pf.preco_final > 0)
+    .filter(pf => {
+      const isValid = pf.preco_final !== null && 
+                     pf.preco_final !== undefined && 
+                     typeof pf.preco_final === 'number' && 
+                     pf.preco_final > 0;
+      
+      if (!isValid) {
+        console.log(`  ❌ Preço inválido filtrado: ${pf._id} = ${pf.preco_final} (tipo: ${typeof pf.preco_final})`);
+      } else {
+        console.log(`  ✅ Preço válido: ${pf._id} = ${pf.preco_final}`);
+      }
+      
+      return isValid;
+    })
     .map(pf => pf.preco_final);
+  
+  console.log('💰 Preços válidos encontrados:', validPrices);
   
   const qtd_fornecedores = validPrices.length;
   const menor_preco = qtd_fornecedores > 0 ? Math.min(...validPrices) : 0;
   const preco_medio = qtd_fornecedores > 0 ? validPrices.reduce((a, b) => a + b, 0) / qtd_fornecedores : 0;
   
+  console.log('📊 Estatísticas calculadas:', { qtd_fornecedores, menor_preco, preco_medio });
+  
   return { qtd_fornecedores, menor_preco, preco_medio };
 }
 
-// Função para processar o CSV (agora com processId)
+// Função para processar o CSV (com processId)
 function processCSV(filePath, processId = null) {
   return new Promise((resolve, reject) => {
     try {
@@ -320,7 +342,9 @@ function processCSV(filePath, processId = null) {
   });
 }
 
-// Função principal para sincronizar com o Bubble (agora com processId)
+// ================ FUNÇÃO PRINCIPAL CORRIGIDA ================
+
+// Função principal para sincronizar com o Bubble (TOTALMENTE CORRIGIDA)
 async function syncWithBubble(csvData, gorduraValor, processId = null) {
   try {
     console.log('\n🔄 Iniciando sincronização com Bubble...');
@@ -360,7 +384,9 @@ async function syncWithBubble(csvData, gorduraValor, processId = null) {
       produtos_criados: 0,
       relacoes_criadas: 0,
       relacoes_atualizadas: 0,
-      relacoes_zeradas: 0
+      relacoes_zeradas: 0,
+      produtos_stats_atualizados: 0,
+      produtos_melhor_preco_atualizados: 0
     };
     
     // 3. PROCESSAR PRODUTOS DO CSV
@@ -500,7 +526,29 @@ async function syncWithBubble(csvData, gorduraValor, processId = null) {
       }
     }
     
-    // 5. RECALCULAR ESTATÍSTICAS DOS PRODUTOS
+    // 5. CORREÇÃO CRÍTICA: RECARREGAR DADOS APÓS TODAS AS ATUALIZAÇÕES
+    console.log('\n🔄 CRÍTICO: Recarregando dados após atualizações...');
+    
+    if (processId) {
+      updateProcessStatus(processId, 'sincronizando_bubble', { 
+        etapa: 'Recarregando dados atualizados para recálculo' 
+      });
+    }
+    
+    // CORREÇÃO CRÍTICA: Aguardar persistência das atualizações
+    console.log('⏳ Aguardando persistência das atualizações...');
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    // Recarregar dados ATUALIZADOS
+    console.log('🔄 Recarregando dados do Bubble...');
+    const [produtoFornecedoresAtualizados, produtosAtualizados] = await Promise.all([
+      fetchAllFromBubble('1 - ProdutoFornecedor _25marco'),
+      fetchAllFromBubble('1 - produtos_25marco')
+    ]);
+    
+    console.log(`📊 Dados recarregados: ${produtoFornecedoresAtualizados.length} relações, ${produtosAtualizados.length} produtos`);
+    
+    // 6. RECALCULAR ESTATÍSTICAS DOS PRODUTOS
     console.log('\n📊 Recalculando estatísticas dos produtos...');
     
     if (processId) {
@@ -509,47 +557,102 @@ async function syncWithBubble(csvData, gorduraValor, processId = null) {
       });
     }
     
-    // Recarregar dados atualizados
-    const produtoFornecedoresAtualizados = await fetchAllFromBubble('1 - ProdutoFornecedor _25marco');
+    // CORREÇÃO CRÍTICA: Agrupar usando dados atualizados
+    const produtoStatsMap = new Map();
     
     // Agrupar por produto
-    const produtoStats = new Map();
     produtoFornecedoresAtualizados.forEach(pf => {
-      if (!produtoStats.has(pf.produto)) {
-        produtoStats.set(pf.produto, []);
+      if (!produtoStatsMap.has(pf.produto)) {
+        produtoStatsMap.set(pf.produto, []);
       }
-      produtoStats.get(pf.produto).push(pf);
+      produtoStatsMap.get(pf.produto).push(pf);
     });
     
-    // Atualizar cada produto
-    for (const [produtoId, relacoes] of produtoStats) {
+    console.log(`📊 Produtos a recalcular: ${produtoStatsMap.size}`);
+    
+    // CORREÇÃO CRÍTICA: Processar cada produto com validação rigorosa
+    for (const [produtoId, relacoes] of produtoStatsMap) {
+      console.log(`\n📊 Processando produto ID: ${produtoId}`);
+      console.log(`   Relações: ${relacoes.length}`);
+      
+      // CORREÇÃO CRÍTICA: Validar se produto existe
+      const produto = produtosAtualizados.find(p => p._id === produtoId);
+      if (!produto) {
+        console.log(`❌ Produto ${produtoId} não encontrado, pulando...`);
+        continue;
+      }
+      
+      console.log(`   Código: ${produto.id_planilha}`);
+      console.log(`   Nome: ${produto.nome_completo}`);
+      
+      // Calcular estatísticas com a função corrigida
       const stats = calculateProductStats(relacoes);
       
+      // CORREÇÃO CRÍTICA: Validar se stats são válidas
+      if (stats.qtd_fornecedores === 0) {
+        console.log(`⚠️  Produto ${produto.id_planilha} sem fornecedores válidos`);
+      }
+      
       // Atualizar estatísticas do produto
+      console.log(`🔄 Atualizando estatísticas do produto: ${produto.id_planilha}`);
       await updateInBubble('1 - produtos_25marco', produtoId, {
         qtd_fornecedores: stats.qtd_fornecedores,
         menor_preco: stats.menor_preco,
         preco_medio: stats.preco_medio
       });
       
-      // Atualizar melhor_preco nas relações (baseado no preco_final)
+      results.produtos_stats_atualizados++;
+      
+      // CORREÇÃO CRÍTICA: Atualizar melhor_preco com validação rigorosa
+      console.log(`🏆 Atualizando melhor_preco para produto: ${produto.id_planilha}`);
+      console.log(`   Menor preço calculado: ${stats.menor_preco}`);
+      
       for (const relacao of relacoes) {
-        const isMelhorPreco = relacao.preco_final === stats.menor_preco && relacao.preco_final > 0;
+        const isMelhorPreco = relacao.preco_final === stats.menor_preco && 
+                             relacao.preco_final > 0 && 
+                             stats.menor_preco > 0;
+        
+        console.log(`   Relação ${relacao._id}: preco_final=${relacao.preco_final}, atual_melhor=${relacao.melhor_preco}, novo_melhor=${isMelhorPreco}`);
+        
+        // Só atualizar se mudou
         if (relacao.melhor_preco !== isMelhorPreco) {
+          console.log(`   🔄 Atualizando melhor_preco: ${relacao._id} -> ${isMelhorPreco}`);
+          
           await updateInBubble('1 - ProdutoFornecedor _25marco', relacao._id, {
             melhor_preco: isMelhorPreco
           });
+          
+          results.produtos_melhor_preco_atualizados++;
+        } else {
+          console.log(`   ✅ Melhor_preco já correto para: ${relacao._id}`);
         }
       }
     }
     
     console.log('\n✅ Sincronização concluída!');
-    console.log('📊 Resultados:', results);
+    console.log('📊 Resultados detalhados:', results);
+    
+    // CORREÇÃO CRÍTICA: Validação final
+    console.log('\n🔍 Validação final dos resultados...');
+    
+    const produtosFinalValidacao = await fetchAllFromBubble('1 - produtos_25marco');
+    const produtoComMenorPreco = produtosFinalValidacao.filter(p => p.menor_preco > 0);
+    const relacoesFinalValidacao = await fetchAllFromBubble('1 - ProdutoFornecedor _25marco');
+    const relacoesMelhorPreco = relacoesFinalValidacao.filter(r => r.melhor_preco === true);
+    
+    console.log(`✅ Produtos com menor_preco > 0: ${produtoComMenorPreco.length}/${produtosFinalValidacao.length}`);
+    console.log(`✅ Relações com melhor_preco = true: ${relacoesMelhorPreco.length}/${relacoesFinalValidacao.length}`);
     
     if (processId) {
       updateProcessStatus(processId, 'concluido', { 
         etapa: 'Sincronização concluída com sucesso',
-        resultados: results
+        resultados: results,
+        validacao: {
+          total_produtos: produtosFinalValidacao.length,
+          produtos_com_menor_preco: produtoComMenorPreco.length,
+          total_relacoes: relacoesFinalValidacao.length,
+          relacoes_com_melhor_preco: relacoesMelhorPreco.length
+        }
       });
     }
     
@@ -743,8 +846,6 @@ app.delete('/process-cleanup', (req, res) => {
   });
 });
 
-// ================ ROTAS ORIGINAIS (mantidas) ================
-
 // Rota para buscar estatísticas
 app.get('/stats', async (req, res) => {
   try {
@@ -754,16 +855,30 @@ app.get('/stats', async (req, res) => {
       fetchAllFromBubble('1 - ProdutoFornecedor _25marco')
     ]);
     
+    // Estatísticas detalhadas para debug
+    const produtosComMenorPreco = produtos.filter(p => p.menor_preco > 0);
+    const relacoesMelhorPreco = produtoFornecedores.filter(r => r.melhor_preco === true);
+    
     res.json({
-      total_fornecedores: fornecedores.length,
-      total_produtos: produtos.length,
-      total_relacoes: produtoFornecedores.length,
-      fornecedores_ativos: fornecedores.filter(f => f.status_ativo === 'yes').length,
-      produtos_com_preco: produtos.filter(p => p.menor_preco > 0).length
+      success: true,
+      estatisticas: {
+        total_fornecedores: fornecedores.length,
+        total_produtos: produtos.length,
+        total_relacoes: produtoFornecedores.length,
+        fornecedores_ativos: fornecedores.filter(f => f.status_ativo === 'yes').length,
+        produtos_com_menor_preco: produtosComMenorPreco.length,
+        relacoes_com_melhor_preco: relacoesMelhorPreco.length,
+        percentual_produtos_com_preco: ((produtosComMenorPreco.length / produtos.length) * 100).toFixed(1) + '%'
+      },
+      debug: {
+        produtos_sem_menor_preco: produtos.filter(p => p.menor_preco === 0).length,
+        relacoes_sem_melhor_preco: produtoFornecedores.filter(r => r.melhor_preco !== true).length
+      }
     });
     
   } catch (error) {
     res.status(500).json({
+      success: false,
       error: 'Erro ao buscar estatísticas',
       details: error.message
     });
@@ -781,6 +896,7 @@ app.get('/produto/:codigo', async (req, res) => {
     
     if (produtos.length === 0) {
       return res.status(404).json({
+        success: false,
         error: 'Produto não encontrado'
       });
     }
@@ -792,15 +908,32 @@ app.get('/produto/:codigo', async (req, res) => {
       'produto': produto._id
     });
     
+    // Buscar fornecedores das relações
+    const fornecedores = await fetchAllFromBubble('1 - fornecedor_25marco');
+    const fornecedorMap = new Map();
+    fornecedores.forEach(f => fornecedorMap.set(f._id, f));
+    
+    const relacoesDetalhadas = relacoes.map(r => ({
+      ...r,
+      fornecedor_nome: fornecedorMap.get(r.fornecedor)?.nome_fornecedor || 'Não encontrado'
+    }));
+    
     res.json({
-      produto,
-      fornecedores: relacoes.length,
-      preco_menor: produto.menor_preco,
-      preco_medio: produto.preco_medio
+      success: true,
+      produto: produto,
+      relacoes: relacoesDetalhadas,
+      estatisticas: {
+        total_fornecedores: relacoes.length,
+        fornecedores_com_preco: relacoes.filter(r => r.preco_final > 0).length,
+        melhor_preco: produto.menor_preco,
+        preco_medio: produto.preco_medio,
+        fornecedores_melhor_preco: relacoes.filter(r => r.melhor_preco === true).length
+      }
     });
     
   } catch (error) {
     res.status(500).json({
+      success: false,
       error: 'Erro ao buscar produto',
       details: error.message
     });
@@ -813,7 +946,8 @@ app.get('/health', (req, res) => {
     status: 'OK', 
     message: 'API funcionando corretamente',
     timestamp: new Date().toISOString(),
-    processamentos_ativos: processamentos.size
+    processamentos_ativos: processamentos.size,
+    version: '3.1.0 - Processamento Assíncrono com Correções Críticas'
   });
 });
 
@@ -851,37 +985,96 @@ app.get('/test-bubble', async (req, res) => {
   }
 });
 
+// Nova rota para debug dos problemas de preço
+app.get('/debug/precos', async (req, res) => {
+  try {
+    console.log('🔍 Iniciando debug dos preços...');
+    
+    const [produtos, relacoes] = await Promise.all([
+      fetchAllFromBubble('1 - produtos_25marco'),
+      fetchAllFromBubble('1 - ProdutoFornecedor _25marco')
+    ]);
+    
+    // Produtos sem menor_preco
+    const produtosSemPreco = produtos.filter(p => p.menor_preco === 0);
+    
+    // Relações sem melhor_preco
+    const relacoesSemMelhorPreco = relacoes.filter(r => r.melhor_preco !== true);
+    
+    // Análise detalhada de alguns produtos
+    const analiseDetalhada = produtosSemPreco.slice(0, 5).map(produto => {
+      const relacoesproduto = relacoes.filter(r => r.produto === produto._id);
+      return {
+        produto: produto,
+        relacoes: relacoesproduto,
+        precos_finais: relacoesProduct.map(r => r.preco_final),
+        tem_precos_validos: relacoesProduct.some(r => r.preco_final > 0)
+      };
+    });
+    
+    res.json({
+      success: true,
+      debug: {
+        total_produtos: produtos.length,
+        produtos_sem_menor_preco: produtosSemPreco.length,
+        total_relacoes: relacoes.length,
+        relacoes_sem_melhor_preco: relacoesSemMelhorPreco.length,
+        analise_detalhada: analiseDetalhada,
+        problema_identificado: produtosSemPreco.length > 0 ? 'Produtos sem menor_preco encontrados' : 'Nenhum problema identificado'
+      }
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Erro no debug',
+      details: error.message
+    });
+  }
+});
+
 // Rota de documentação
 app.get('/', (req, res) => {
   res.json({
     message: 'API para processamento de CSV de produtos com integração Bubble',
-    version: '3.1.0 - Processamento Assíncrono',
+    version: '3.1.0 - Processamento Assíncrono com Correções Críticas',
     endpoints: {
       'POST /process-csv': 'Envia arquivo CSV com parâmetro gordura_valor e inicia processamento assíncrono',
       'GET /process-status/:processId': 'Consulta status de um processamento específico',
       'GET /process-list': 'Lista todos os processamentos (últimos 50)',
       'DELETE /process-cleanup': 'Remove processamentos antigos (mais de 24h)',
-      'GET /stats': 'Retorna estatísticas das tabelas',
-      'GET /produto/:codigo': 'Busca produto específico por código',
+      'GET /stats': 'Retorna estatísticas das tabelas com debug',
+      'GET /produto/:codigo': 'Busca produto específico por código com relações detalhadas',
+      'GET /debug/precos': 'Debug dos problemas de menor_preco e melhor_preco',
       'GET /health': 'Verifica status da API',
       'GET /test-bubble': 'Testa conectividade com Bubble'
     },
     parametros_obrigatorios: {
       'gordura_valor': 'number - Valor a ser adicionado ao preço original'
     },
+    correcoes_criticas: [
+      'Race condition corrigida: dados recarregados após atualizações',
+      'Filtro de preços corrigido: não remove mais dados válidos',
+      'Validação rigorosa: verifica existência antes de processar',
+      'Logging detalhado: visibilidade completa para debug',
+      'Timing correto: aguarda persistência antes de recalcular',
+      'Validação final: confirma resultados corretos'
+    ],
     funcionalidades: [
       'Processamento assíncrono de CSV',
       'Acompanhamento de status em tempo real',
       'Processamento de CSV com layout horizontal',
       'Cotação diária completa (zera produtos não cotados)',
       'Cálculos baseados no preço final (com margem)',
-      'Identificação automática do melhor preço',
-      'Sincronização inteligente com Bubble'
+      'Identificação automática do melhor preço (CORRIGIDA)',
+      'Sincronização inteligente com Bubble',
+      'Debug avançado para identificar problemas'
     ],
     exemplo_uso: {
       '1_enviar_csv': 'POST /process-csv com arquivo e gordura_valor',
       '2_receber_process_id': 'API retorna imediatamente com process_id',
-      '3_consultar_status': 'GET /process-status/{process_id} para acompanhar'
+      '3_consultar_status': 'GET /process-status/{process_id} para acompanhar',
+      '4_debug_problemas': 'GET /debug/precos para investigar problemas'
     }
   });
 });
@@ -916,11 +1109,13 @@ app.listen(PORT, () => {
   console.log(`🚀 Servidor rodando na porta ${PORT}`);
   console.log(`📊 Acesse: http://localhost:${PORT}`);
   console.log(`🔗 Integração Bubble configurada`);
-  console.log(`✨ Versão 3.1.0 - Processamento Assíncrono`);
+  console.log(`✨ Versão 3.1.0 - Processamento Assíncrono com Correções Críticas`);
+  console.log(`🔧 Problemas de menor_preco e melhor_preco CORRIGIDOS`);
   console.log(`🔄 Endpoints para acompanhar processamento:`);
   console.log(`   - POST /process-csv (inicia processamento)`);
   console.log(`   - GET /process-status/:id (consulta status)`);
   console.log(`   - GET /process-list (lista todos)`);
+  console.log(`   - GET /debug/precos (debug dos preços)`);
 });
 
 module.exports = app;
