@@ -226,15 +226,33 @@ async function updateInBubble(tableName, itemId, data) {
   });
 }
 
-// Função para calcular estatísticas do produto baseadas no preco_final
+// Função para calcular estatísticas do produto baseadas no preco_final - CORRIGIDA
 function calculateProductStats(produtoFornecedores) {
+  console.log(`📊 Calculando stats para produto com ${produtoFornecedores.length} relações`);
+  
+  // Filtrar apenas relações com preço válido (> 0) e status ativo
   const validPrices = produtoFornecedores
-    .filter(pf => pf.preco_final && pf.preco_final > 0)
+    .filter(pf => {
+      const isValid = pf.preco_final && 
+                     pf.preco_final > 0 && 
+                     pf.status_ativo === 'yes';
+      
+      if (!isValid) {
+        console.log(`📊 Relação inválida: preco_final=${pf.preco_final}, status=${pf.status_ativo}`);
+      }
+      
+      return isValid;
+    })
     .map(pf => pf.preco_final);
+  
+  console.log(`📊 Preços válidos encontrados: [${validPrices.join(', ')}]`);
   
   const qtd_fornecedores = validPrices.length;
   const menor_preco = qtd_fornecedores > 0 ? Math.min(...validPrices) : 0;
-  const preco_medio = qtd_fornecedores > 0 ? validPrices.reduce((a, b) => a + b, 0) / qtd_fornecedores : 0;
+  const preco_medio = qtd_fornecedores > 0 ? 
+    Math.round((validPrices.reduce((a, b) => a + b, 0) / qtd_fornecedores) * 100) / 100 : 0;
+  
+  console.log(`📊 Stats calculadas: qtd=${qtd_fornecedores}, menor=${menor_preco}, media=${preco_medio}`);
   
   return { qtd_fornecedores, menor_preco, preco_medio };
 }
@@ -706,14 +724,21 @@ async function syncWithBubble(csvData, gorduraValor) {
       results.erros.push(...zeramentoErrors);
     }
     
-    // 5. RECALCULAR ESTATÍSTICAS DOS PRODUTOS
+    // 5. RECALCULAR ESTATÍSTICAS DOS PRODUTOS - COMPLETAMENTE REESCRITO
     console.log('\n📊 Recalculando estatísticas dos produtos...');
     
-    // Recarregar dados atualizados de forma otimizada
-    const produtoFornecedoresAtualizados = await fetchAllFromBubble('1 - ProdutoFornecedor _25marco');
+    // Recarregar TODOS os dados atualizados
+    console.log('🔄 Recarregando dados atualizados...');
+    const [produtosAtualizados, produtoFornecedoresAtualizados] = await Promise.all([
+      fetchAllFromBubble('1 - produtos_25marco'),
+      fetchAllFromBubble('1 - ProdutoFornecedor _25marco')
+    ]);
     
-    // Agrupar por produto de forma otimizada
+    console.log(`📊 Dados recarregados: ${produtosAtualizados.length} produtos, ${produtoFornecedoresAtualizados.length} relações`);
+    
+    // Agrupar relações por produto de forma otimizada
     const produtoStatsMap = new Map();
+    
     produtoFornecedoresAtualizados.forEach(pf => {
       if (!produtoStatsMap.has(pf.produto)) {
         produtoStatsMap.set(pf.produto, []);
@@ -721,36 +746,70 @@ async function syncWithBubble(csvData, gorduraValor) {
       produtoStatsMap.get(pf.produto).push(pf);
     });
     
-    // Preparar operações de atualização de estatísticas
+    console.log(`📊 Agrupadas relações para ${produtoStatsMap.size} produtos únicos`);
+    
+    // Preparar operações de atualização de estatísticas e melhor preço
     const operacoesEstatisticas = [];
     const operacoesMelhorPreco = [];
+    let produtosComPreco = 0;
+    let produtosSemPreco = 0;
     
     for (const [produtoId, relacoes] of produtoStatsMap) {
+      console.log(`\n📊 Processando produto ID: ${produtoId} com ${relacoes.length} relações`);
+      
+      // Calcular estatísticas
       const stats = calculateProductStats(relacoes);
       
+      if (stats.qtd_fornecedores > 0) {
+        produtosComPreco++;
+        console.log(`✅ Produto com preço: qtd=${stats.qtd_fornecedores}, menor=${stats.menor_preco}, media=${stats.preco_medio}`);
+      } else {
+        produtosSemPreco++;
+        console.log(`❌ Produto sem preço válido`);
+      }
+      
+      // Adicionar à lista de atualizações de estatísticas
       operacoesEstatisticas.push({
         produtoId,
         stats
       });
       
-      // Preparar atualizações de melhor preço
+      // Determinar melhor preço e preparar atualizações
       relacoes.forEach(relacao => {
-        const isMelhorPreco = relacao.preco_final === stats.menor_preco && relacao.preco_final > 0;
+        // Lógica corrigida para melhor preço:
+        // 1. Deve ter preço > 0
+        // 2. Deve ser o menor preço entre todos os fornecedores
+        // 3. Deve estar ativo
+        const isMelhorPreco = relacao.preco_final > 0 && 
+                             relacao.preco_final === stats.menor_preco && 
+                             relacao.status_ativo === 'yes' &&
+                             stats.menor_preco > 0;
+        
+        // Só atualizar se o valor atual estiver diferente
         if (relacao.melhor_preco !== isMelhorPreco) {
           operacoesMelhorPreco.push({
             relacaoId: relacao._id,
-            melhorPreco: isMelhorPreco
+            melhorPreco: isMelhorPreco,
+            precoFinal: relacao.preco_final,
+            menorPreco: stats.menor_preco
           });
+          
+          console.log(`🏆 Melhor preço para relação ${relacao._id}: ${isMelhorPreco} (preço: ${relacao.preco_final}, menor: ${stats.menor_preco})`);
         }
       });
     }
     
+    console.log(`\n📊 Resumo: ${produtosComPreco} produtos com preço, ${produtosSemPreco} sem preço`);
+    console.log(`📊 Operações preparadas: ${operacoesEstatisticas.length} atualizações de stats, ${operacoesMelhorPreco.length} atualizações de melhor preço`);
+    
     // Executar atualizações de estatísticas em lotes
     if (operacoesEstatisticas.length > 0) {
-      console.log(`📊 Atualizando estatísticas de ${operacoesEstatisticas.length} produtos...`);
-      await processBatch(
+      console.log(`\n📊 Atualizando estatísticas de ${operacoesEstatisticas.length} produtos...`);
+      const { results: statsResults, errors: statsErrors } = await processBatch(
         operacoesEstatisticas,
         async (operacao) => {
+          console.log(`📊 Atualizando produto ${operacao.produtoId}: qtd=${operacao.stats.qtd_fornecedores}, menor=${operacao.stats.menor_preco}, media=${operacao.stats.preco_medio}`);
+          
           return await updateInBubble('1 - produtos_25marco', operacao.produtoId, {
             qtd_fornecedores: operacao.stats.qtd_fornecedores,
             menor_preco: operacao.stats.menor_preco,
@@ -758,20 +817,33 @@ async function syncWithBubble(csvData, gorduraValor) {
           });
         }
       );
+      
+      const sucessoStats = statsResults.filter(r => r.success).length;
+      console.log(`✅ Estatísticas atualizadas: ${sucessoStats}/${operacoesEstatisticas.length}`);
+      results.erros.push(...statsErrors);
     }
     
     // Executar atualizações de melhor preço em lotes
     if (operacoesMelhorPreco.length > 0) {
-      console.log(`🏆 Atualizando melhor preço de ${operacoesMelhorPreco.length} relações...`);
-      await processBatch(
+      console.log(`\n🏆 Atualizando melhor preço de ${operacoesMelhorPreco.length} relações...`);
+      const { results: melhorPrecoResults, errors: melhorPrecoErrors } = await processBatch(
         operacoesMelhorPreco,
         async (operacao) => {
+          console.log(`🏆 Atualizando relação ${operacao.relacaoId}: melhor_preco=${operacao.melhorPreco} (${operacao.precoFinal} vs ${operacao.menorPreco})`);
+          
           return await updateInBubble('1 - ProdutoFornecedor _25marco', operacao.relacaoId, {
             melhor_preco: operacao.melhorPreco
           });
         }
       );
+      
+      const sucessoMelhorPreco = melhorPrecoResults.filter(r => r.success).length;
+      console.log(`✅ Melhor preço atualizado: ${sucessoMelhorPreco}/${operacoesMelhorPreco.length}`);
+      results.erros.push(...melhorPrecoErrors);
     }
+    
+    // Aguardar um momento para propagação das mudanças
+    await delay(1000);
     
     console.log('\n✅ Sincronização otimizada concluída!');
     console.log('📊 Resultados:', results);
@@ -897,13 +969,18 @@ app.get('/stats', async (req, res) => {
   }
 });
 
-// Rota para buscar produto específico
+// Rota para buscar produto específico - COM DEBUGGING
 app.get('/produto/:codigo', async (req, res) => {
   try {
     const codigo = req.params.codigo;
+    console.log(`🔍 Buscando produto: ${codigo}`);
     
     const produtos = await fetchAllFromBubble('1 - produtos_25marco', {
-      'id_planilha': codigo
+      'constraints': [{
+        'key': 'id_planilha',
+        'constraint_type': 'equals',
+        'value': codigo
+      }]
     });
     
     if (produtos.length === 0) {
@@ -913,28 +990,70 @@ app.get('/produto/:codigo', async (req, res) => {
     }
     
     const produto = produtos[0];
+    console.log(`📦 Produto encontrado:`, produto);
     
     // Buscar relações do produto
     const relacoes = await fetchAllFromBubble('1 - ProdutoFornecedor _25marco', {
-      'produto': produto._id
+      'constraints': [{
+        'key': 'produto',
+        'constraint_type': 'equals',
+        'value': produto._id
+      }]
     });
+    
+    console.log(`🔗 Relações encontradas: ${relacoes.length}`);
     
     // Buscar fornecedores das relações
     const fornecedorIds = [...new Set(relacoes.map(r => r.fornecedor))];
-    const fornecedores = await Promise.all(
-      fornecedorIds.map(id => fetchAllFromBubble('1 - fornecedor_25marco', { '_id': id }))
-    );
+    console.log(`👥 IDs de fornecedores: [${fornecedorIds.join(', ')}]`);
     
+    const fornecedoresPromises = fornecedorIds.map(async (id) => {
+      const fornecedores = await fetchAllFromBubble('1 - fornecedor_25marco', {
+        'constraints': [{
+          'key': '_id',
+          'constraint_type': 'equals',
+          'value': id
+        }]
+      });
+      return fornecedores[0];
+    });
+    
+    const fornecedoresList = await Promise.all(fornecedoresPromises);
     const fornecedorMap = new Map();
-    fornecedores.flat().forEach(f => fornecedorMap.set(f._id, f));
+    fornecedoresList.forEach(f => {
+      if (f) fornecedorMap.set(f._id, f);
+    });
     
-    const relacoesDetalhadas = relacoes.map(r => ({
-      fornecedor: fornecedorMap.get(r.fornecedor)?.nome_fornecedor || 'Desconhecido',
-      preco_original: r.preco_original,
-      preco_final: r.preco_final,
-      melhor_preco: r.melhor_preco,
-      status_ativo: r.status_ativo
-    }));
+    console.log(`👥 Fornecedores carregados: ${fornecedorMap.size}`);
+    
+    const relacoesDetalhadas = relacoes.map(r => {
+      const fornecedor = fornecedorMap.get(r.fornecedor);
+      return {
+        fornecedor: fornecedor?.nome_fornecedor || 'Desconhecido',
+        preco_original: r.preco_original,
+        preco_final: r.preco_final,
+        melhor_preco: r.melhor_preco,
+        status_ativo: r.status_ativo,
+        preco_ordenacao: r.preco_ordenacao
+      };
+    });
+    
+    // Recalcular estatísticas em tempo real para debugging
+    const relacoesAtivas = relacoes.filter(r => r.status_ativo === 'yes' && r.preco_final > 0);
+    const precosValidos = relacoesAtivas.map(r => r.preco_final);
+    const statsCalculadas = {
+      qtd_fornecedores: precosValidos.length,
+      menor_preco: precosValidos.length > 0 ? Math.min(...precosValidos) : 0,
+      preco_medio: precosValidos.length > 0 ? 
+        Math.round((precosValidos.reduce((a, b) => a + b, 0) / precosValidos.length) * 100) / 100 : 0
+    };
+    
+    console.log(`📊 Stats calculadas em tempo real:`, statsCalculadas);
+    console.log(`📊 Stats salvas no banco:`, {
+      qtd_fornecedores: produto.qtd_fornecedores,
+      menor_preco: produto.menor_preco,
+      preco_medio: produto.preco_medio
+    });
     
     res.json({
       produto: {
@@ -944,11 +1063,19 @@ app.get('/produto/:codigo', async (req, res) => {
         preco_medio: produto.preco_medio,
         qtd_fornecedores: produto.qtd_fornecedores
       },
-      relacoes: relacoesDetalhadas,
+      stats_calculadas_tempo_real: statsCalculadas,
+      relacoes: relacoesDetalhadas.sort((a, b) => a.preco_final - b.preco_final),
+      debug: {
+        total_relacoes: relacoes.length,
+        relacoes_ativas: relacoesAtivas.length,
+        precos_validos: precosValidos,
+        fornecedores_encontrados: fornecedorMap.size
+      },
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
+    console.error('❌ Erro ao buscar produto:', error);
     res.status(500).json({
       error: 'Erro ao buscar produto',
       details: error.message
