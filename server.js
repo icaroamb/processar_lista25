@@ -226,19 +226,17 @@ async function updateInBubble(tableName, itemId, data) {
   });
 }
 
-// Função para calcular estatísticas do produto baseadas no preco_final - CORRIGIDA
+// Função para calcular estatísticas do produto baseadas no preco_final - SEM STATUS_ATIVO
 function calculateProductStats(produtoFornecedores) {
   console.log(`📊 Calculando stats para produto com ${produtoFornecedores.length} relações`);
   
-  // Filtrar apenas relações com preço válido (> 0) e status ativo
+  // Filtrar apenas relações com preço válido (> 0) - SEM VERIFICAR STATUS
   const validPrices = produtoFornecedores
     .filter(pf => {
-      const isValid = pf.preco_final && 
-                     pf.preco_final > 0 && 
-                     pf.status_ativo === 'yes';
+      const isValid = pf.preco_final && pf.preco_final > 0;
       
       if (!isValid) {
-        console.log(`📊 Relação inválida: preco_final=${pf.preco_final}, status=${pf.status_ativo}`);
+        console.log(`📊 Relação inválida: preco_final=${pf.preco_final}`);
       }
       
       return isValid;
@@ -454,8 +452,7 @@ async function syncWithBubble(csvData, gorduraValor) {
           tipo: 'criar',
           nome: lojaData.loja,
           dados: {
-            nome_fornecedor: lojaData.loja,
-            status_ativo: 'yes'
+            nome_fornecedor: lojaData.loja
           }
         });
       }
@@ -622,15 +619,14 @@ async function syncWithBubble(csvData, gorduraValor) {
         const relacaoExistente = relacaoMap.get(chaveRelacao);
         
         if (!relacaoExistente) {
-          const novaRelacao = await createInBubble('1 - ProdutoFornecedor _25marco', {
+          const novaRelacao =           await createInBubble('1 - ProdutoFornecedor _25marco', {
             produto: produto._id,
             fornecedor: fornecedor._id,
             nome_produto: operacao.modelo,
             preco_original: operacao.precoOriginal,
             preco_final: operacao.precoFinal,
             preco_ordenacao: operacao.precoOrdenacao,
-            melhor_preco: false,
-            status_ativo: 'yes'
+            melhor_preco: false
           });
           return { tipo: 'criada', resultado: novaRelacao };
         } else if (relacaoExistente.preco_original !== operacao.precoOriginal) {
@@ -744,15 +740,13 @@ async function syncWithBubble(csvData, gorduraValor) {
         stats
       });
       
-      // Determinar melhor preço e preparar atualizações
+      // Determinar melhor preço e preparar atualizações - SEM STATUS_ATIVO
       relacoes.forEach(relacao => {
         // Lógica corrigida para melhor preço:
         // 1. Deve ter preço > 0
         // 2. Deve ser o menor preço entre todos os fornecedores
-        // 3. Deve estar ativo
         const isMelhorPreco = relacao.preco_final > 0 && 
                              relacao.preco_final === stats.menor_preco && 
-                             relacao.status_ativo === 'yes' &&
                              stats.menor_preco > 0;
         
         // Só atualizar se o valor atual estiver diferente
@@ -977,13 +971,12 @@ app.get('/produto/:codigo', async (req, res) => {
         preco_original: r.preco_original,
         preco_final: r.preco_final,
         melhor_preco: r.melhor_preco,
-        status_ativo: r.status_ativo,
         preco_ordenacao: r.preco_ordenacao
       };
     });
     
-    // Recalcular estatísticas em tempo real para debugging
-    const relacoesAtivas = relacoes.filter(r => r.status_ativo === 'yes' && r.preco_final > 0);
+    // Recalcular estatísticas em tempo real para debugging - SEM STATUS_ATIVO
+    const relacoesAtivas = relacoes.filter(r => r.preco_final > 0);
     const precosValidos = relacoesAtivas.map(r => r.preco_final);
     const statsCalculadas = {
       qtd_fornecedores: precosValidos.length,
@@ -1011,7 +1004,7 @@ app.get('/produto/:codigo', async (req, res) => {
       relacoes: relacoesDetalhadas.sort((a, b) => a.preco_final - b.preco_final),
       debug: {
         total_relacoes: relacoes.length,
-        relacoes_ativas: relacoesAtivas.length,
+        relacoes_com_preco: relacoesAtivas.length,
         precos_validos: precosValidos,
         fornecedores_encontrados: fornecedorMap.size
       },
