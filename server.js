@@ -709,11 +709,11 @@ async function syncWithBubble(csvData, gorduraValor) {
             id_unico: produtoCsv.id_unico,
             dados: {
               id_planilha: produtoCsv.id_unico,        // ✅ ID único como identificador
-              codigo_original: produtoCsv.codigo_original, // ✅ Código original (pode ser vazio)
               nome_completo: produtoCsv.modelo,
               preco_medio: 0,
               qtd_fornecedores: 0,
               menor_preco: 0
+              // ❌ REMOVIDO: codigo_original (campo não existe na tabela produtos)
             }
           });
           
@@ -846,8 +846,8 @@ async function syncWithBubble(csvData, gorduraValor) {
           produtoMap.set(operacao.id_unico, {
             _id: produto._id,
             id_planilha: produto.id_planilha,
-            nome_completo: produto.nome_completo,
-            codigo_original: produto.codigo_original
+            nome_completo: produto.nome_completo
+            // ❌ REMOVIDO: codigo_original (campo não existe)
           });
           console.log(`📋 Produto ${operacao.id_unico} já existe, pulando criação`);
         }
@@ -870,8 +870,8 @@ async function syncWithBubble(csvData, gorduraValor) {
             produtoMap.set(operacao.id_unico, {
               _id: novoProduto.id,
               id_planilha: operacao.id_unico,
-              nome_completo: operacao.dados.nome_completo,
-              codigo_original: operacao.dados.codigo_original
+              nome_completo: operacao.dados.nome_completo
+              // ❌ REMOVIDO: codigo_original (campo não existe)
             });
             return novoProduto;
           }
@@ -1180,9 +1180,15 @@ app.get('/stats', async (req, res) => {
       fetchAllFromBubble('1 - ProdutoFornecedor _25marco')
     ]);
     
-    // ✅ Contar produtos com/sem código
-    const produtosComCodigo = produtos.filter(p => p.codigo_original && p.codigo_original.trim() !== '').length;
-    const produtosSemCodigo = produtos.filter(p => !p.codigo_original || p.codigo_original.trim() === '').length;
+    // ✅ Contar produtos com/sem código baseado no id_planilha
+    const produtosSemCodigo = produtos.filter(p => {
+      // Se o id_planilha não começa com números/letras típicas de código, provavelmente é baseado no modelo
+      const idPlanilha = p.id_planilha || '';
+      // Códigos geralmente são alfanuméricos curtos (até 20 chars), modelos são longos
+      return idPlanilha.length > 20 || idPlanilha.includes(' ');
+    }).length;
+    
+    const produtosComCodigo = produtos.length - produtosSemCodigo;
     
     res.json({
       total_fornecedores: fornecedores.length,
@@ -1273,15 +1279,14 @@ app.get('/produto/:id_unico', async (req, res) => {
     res.json({
       produto: {
         id_unico: produto.id_planilha,        // ✅ ID único
-        codigo_original: produto.codigo_original || '', // ✅ Código original
         nome: produto.nome_completo,
         preco_menor: produto.menor_preco,
         preco_medio: produto.preco_medio,
         qtd_fornecedores: produto.qtd_fornecedores
       },
       correcao_aplicada: {
-        id_baseado_em: produto.codigo_original && produto.codigo_original.trim() !== '' ? 'código' : 'modelo',
-        codigo_original_vazio: !produto.codigo_original || produto.codigo_original.trim() === ''
+        id_baseado_em: produto.id_planilha && produto.id_planilha.length <= 20 && !produto.id_planilha.includes(' ') ? 'código' : 'modelo',
+        produto_sem_codigo_original: produto.id_planilha && (produto.id_planilha.length > 20 || produto.id_planilha.includes(' '))
       },
       stats_calculadas_tempo_real: statsCalculadas,
       relacoes: relacoesDetalhadas.sort((a, b) => a.preco_final - b.preco_final),
@@ -1370,11 +1375,11 @@ app.post('/test-bubble-create', async (req, res) => {
     console.log('🔍 3. Testando criação de produto...');
     const dadosProduto = {
       id_planilha: `TESTE_${Date.now()}`,
-      codigo_original: 'TEST123',
       nome_completo: 'Produto de Teste',
       preco_medio: 0,
       qtd_fornecedores: 0,
       menor_preco: 0
+      // ❌ REMOVIDO: codigo_original (campo não existe)
     };
     
     try {
