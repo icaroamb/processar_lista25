@@ -77,6 +77,24 @@ function extractPrice(priceString) {
   return isNaN(price) ? 0 : price;
 }
 
+// ✅ FUNÇÃO CORRIGIDA: Gerar ID único baseado no modelo quando código for vazio ou "SEM CÓDIGO"
+function gerarIdUnico(codigo, modelo) {
+  // Limpar e verificar código
+  const codigoLimpo = (codigo && 
+    codigo.toString().trim() !== '' && 
+    codigo.toString().trim().toUpperCase() !== 'SEM CÓDIGO' && 
+    codigo.toString().trim().toUpperCase() !== 'SEM CODIGO'
+  ) ? codigo.toString().trim() : '';
+  
+  // Se código válido existe, usar código. Senão, usar modelo como ID
+  const idUnico = codigoLimpo !== '' ? codigoLimpo : modelo.toString().trim();
+  
+  return {
+    codigo_original: codigoLimpo, // Código real (vazio se for "SEM CÓDIGO")
+    id_unico: idUnico            // ID para identificação no sistema
+  };
+}
+
 // Função para fazer parse correto do CSV respeitando aspas
 function parseCSVLine(line) {
   const result = [];
@@ -424,11 +442,12 @@ async function executarLogicaFinalCorreta() {
   }
 }
 
-// Função otimizada para processar o CSV
+// ✅ FUNÇÃO CORRIGIDA: Processar CSV com fix para "SEM CÓDIGO"
 function processCSV(filePath) {
   return new Promise((resolve, reject) => {
     try {
       console.log('📁 Lendo arquivo CSV...');
+      console.log('🔧 APLICANDO CORREÇÃO PARA "SEM CÓDIGO"...');
       
       const fileContent = fs.readFileSync(filePath, 'utf8');
       const lines = fileContent.split('\n').filter(line => line.trim());
@@ -455,10 +474,14 @@ function processCSV(filePath) {
       ];
       
       const processedData = [];
+      let totalProdutosSemCodigo = 0;
+      let totalProdutosComCodigo = 0;
       
       lojasConfig.forEach((lojaConfig) => {
         console.log(`🏪 Processando ${lojaConfig.nome}...`);
         const produtos = [];
+        let semCodigoNaLoja = 0;
+        let comCodigoNaLoja = 0;
         
         // Processar em chunks para economizar memória
         const chunkSize = 1000;
@@ -472,22 +495,34 @@ function processCSV(filePath) {
             
             if (columns.length < 31) return;
             
-            const codigo = columns[lojaConfig.indices[0]];
+            const codigoOriginal = columns[lojaConfig.indices[0]];
             const modelo = columns[lojaConfig.indices[1]];
             const preco = columns[lojaConfig.indices[2]];
             
-            if (codigo && modelo && preco && 
-                codigo.trim() !== '' && 
+            if (modelo && preco && 
                 modelo.trim() !== '' && 
                 preco.trim() !== '') {
               
+              // ✅ APLICAR NOVA LÓGICA DE ID ÚNICO
+              const { codigo_original, id_unico } = gerarIdUnico(codigoOriginal, modelo);
+              
               const precoNumerico = extractPrice(preco);
               
+              // Contar produtos com/sem código
+              if (codigo_original === '') {
+                semCodigoNaLoja++;
+              } else {
+                comCodigoNaLoja++;
+              }
+              
               produtos.push({
-                codigo: codigo.trim(),
+                codigo_original: codigo_original,  // Código real (vazio se "SEM CÓDIGO")
+                id_unico: id_unico,              // ID único para identificação
                 modelo: modelo.trim(),
                 preco: precoNumerico
               });
+              
+              console.log(`🔧 Produto processado: ID="${id_unico}" | Código="${codigo_original}" | Modelo="${modelo.trim().substring(0, 30)}..."`);
             }
           });
           
@@ -497,16 +532,26 @@ function processCSV(filePath) {
           }
         }
         
-        console.log(`✅ ${lojaConfig.nome}: ${produtos.length} produtos`);
+        totalProdutosSemCodigo += semCodigoNaLoja;
+        totalProdutosComCodigo += comCodigoNaLoja;
+        
+        console.log(`✅ ${lojaConfig.nome}: ${produtos.length} produtos (${semCodigoNaLoja} sem código, ${comCodigoNaLoja} com código)`);
         
         if (produtos.length > 0) {
           processedData.push({
             loja: lojaConfig.nome,
             total_produtos: produtos.length,
+            produtos_sem_codigo: semCodigoNaLoja,
+            produtos_com_codigo: comCodigoNaLoja,
             produtos: produtos
           });
         }
       });
+      
+      console.log(`🔧 RESUMO DA CORREÇÃO:`);
+      console.log(`   📊 Total produtos SEM código: ${totalProdutosSemCodigo}`);
+      console.log(`   📊 Total produtos COM código: ${totalProdutosComCodigo}`);
+      console.log(`   📊 Total geral: ${totalProdutosSemCodigo + totalProdutosComCodigo}`);
       
       resolve(processedData);
       
@@ -562,10 +607,11 @@ async function processBatch(items, processorFunction, batchSize = PROCESSING_CON
   return { results, errors };
 }
 
-// Função principal para sincronizar com o Bubble - OTIMIZADA
+// ✅ FUNÇÃO CORRIGIDA: Sincronizar com Bubble usando ID único
 async function syncWithBubble(csvData, gorduraValor) {
   try {
     console.log('\n🔄 Iniciando sincronização otimizada com Bubble...');
+    console.log('🔧 USANDO NOVA LÓGICA DE ID ÚNICO...');
     
     // 1. CARREGAR DADOS EXISTENTES
     console.log('📊 Carregando dados existentes...');
@@ -577,12 +623,12 @@ async function syncWithBubble(csvData, gorduraValor) {
     
     console.log(`📊 Carregados: ${fornecedores.length} fornecedores, ${produtos.length} produtos, ${produtoFornecedores.length} relações`);
     
-    // 2. CRIAR MAPAS OTIMIZADOS PARA BUSCA RÁPIDA
+    // 2. ✅ CRIAR MAPAS OTIMIZADOS PARA BUSCA RÁPIDA - USANDO ID_UNICO
     const fornecedorMap = new Map();
     fornecedores.forEach(f => fornecedorMap.set(f.nome_fornecedor, f));
     
     const produtoMap = new Map();
-    produtos.forEach(p => produtoMap.set(p.id_planilha, p));
+    produtos.forEach(p => produtoMap.set(p.id_planilha, p)); // id_planilha agora é o ID único
     
     const relacaoMap = new Map();
     produtoFornecedores.forEach(pf => {
@@ -595,11 +641,13 @@ async function syncWithBubble(csvData, gorduraValor) {
       relacoes_criadas: 0,
       relacoes_atualizadas: 0,
       relacoes_zeradas: 0,
+      produtos_sem_codigo_processados: 0,
+      produtos_com_codigo_processados: 0,
       erros: []
     };
     
-    // 3. PREPARAR TODAS AS OPERAÇÕES EM MEMÓRIA PRIMEIRO - COM VERIFICAÇÃO DE DUPLICATAS
-    console.log('\n📝 Preparando operações...');
+    // 3. ✅ PREPARAR TODAS AS OPERAÇÕES EM MEMÓRIA PRIMEIRO - COM ID ÚNICO
+    console.log('\n📝 Preparando operações com nova lógica...');
     const operacoesFornecedores = [];
     const operacoesProdutos = [];
     const operacoesRelacoes = [];
@@ -608,11 +656,13 @@ async function syncWithBubble(csvData, gorduraValor) {
     const fornecedoresParaCriar = new Set();
     const produtosParaCriar = new Set();
     
-    // Coletar todos os códigos cotados por fornecedor para lógica de cotação diária
-    const codigosCotadosPorFornecedor = new Map();
+    // Coletar todos os IDs únicos cotados por fornecedor para lógica de cotação diária
+    const idsCotadosPorFornecedor = new Map();
     
     for (const lojaData of csvData) {
-      const codigosCotados = new Set();
+      const idsCotados = new Set();
+      results.produtos_sem_codigo_processados += lojaData.produtos_sem_codigo || 0;
+      results.produtos_com_codigo_processados += lojaData.produtos_com_codigo || 0;
       
       // 3.1 Verificar fornecedor (evitar duplicatas)
       if (!fornecedorMap.has(lojaData.loja) && !fornecedoresParaCriar.has(lojaData.loja)) {
@@ -626,24 +676,27 @@ async function syncWithBubble(csvData, gorduraValor) {
         });
       }
       
-      // 3.2 Processar produtos da loja (evitar duplicatas)
+      // 3.2 ✅ Processar produtos da loja usando ID único
       for (const produtoCsv of lojaData.produtos) {
-        codigosCotados.add(produtoCsv.codigo);
+        idsCotados.add(produtoCsv.id_unico);
         
-        // Verificar produto (evitar duplicatas)
-        if (!produtoMap.has(produtoCsv.codigo) && !produtosParaCriar.has(produtoCsv.codigo)) {
-          produtosParaCriar.add(produtoCsv.codigo);
+        // Verificar produto usando ID único (evitar duplicatas)
+        if (!produtoMap.has(produtoCsv.id_unico) && !produtosParaCriar.has(produtoCsv.id_unico)) {
+          produtosParaCriar.add(produtoCsv.id_unico);
           operacoesProdutos.push({
             tipo: 'criar',
-            codigo: produtoCsv.codigo,
+            id_unico: produtoCsv.id_unico,
             dados: {
-              id_planilha: produtoCsv.codigo,
+              id_planilha: produtoCsv.id_unico,        // ✅ ID único como identificador
+              codigo_original: produtoCsv.codigo_original, // ✅ Código original (pode ser vazio)
               nome_completo: produtoCsv.modelo,
               preco_medio: 0,
               qtd_fornecedores: 0,
               menor_preco: 0
             }
           });
+          
+          console.log(`🔧 Produto para criar: ID="${produtoCsv.id_unico}" | Código="${produtoCsv.codigo_original}"`);
         }
         
         // Calcular preços
@@ -655,7 +708,8 @@ async function syncWithBubble(csvData, gorduraValor) {
         operacoesRelacoes.push({
           tipo: 'processar',
           loja: lojaData.loja,
-          codigo: produtoCsv.codigo,
+          id_unico: produtoCsv.id_unico,
+          codigo_original: produtoCsv.codigo_original,
           modelo: produtoCsv.modelo,
           precoOriginal,
           precoFinal,
@@ -663,14 +717,15 @@ async function syncWithBubble(csvData, gorduraValor) {
         });
       }
       
-      codigosCotadosPorFornecedor.set(lojaData.loja, codigosCotados);
+      idsCotadosPorFornecedor.set(lojaData.loja, idsCotados);
     }
     
     console.log(`📋 Operações preparadas: ${operacoesFornecedores.length} fornecedores únicos, ${operacoesProdutos.length} produtos únicos, ${operacoesRelacoes.length} relações`);
+    console.log(`📊 Produtos processados: ${results.produtos_sem_codigo_processados} sem código, ${results.produtos_com_codigo_processados} com código`);
     
     // 4. EXECUTAR OPERAÇÕES EM LOTES
     
-    // 4.1 Criar fornecedores em lotes - SEM CONSTRAINTS PROBLEMÁTICAS
+    // 4.1 Criar fornecedores em lotes
     if (operacoesFornecedores.length > 0) {
       console.log('\n👥 Criando fornecedores...');
       
@@ -720,9 +775,9 @@ async function syncWithBubble(csvData, gorduraValor) {
       }
     }
     
-    // 4.2 Criar produtos em lotes - SEM CONSTRAINTS PROBLEMÁTICAS
+    // 4.2 ✅ Criar produtos em lotes usando ID único
     if (operacoesProdutos.length > 0) {
-      console.log('\n📦 Criando produtos...');
+      console.log('\n📦 Criando produtos com nova lógica...');
       
       // Buscar TODOS os produtos existentes de uma vez
       const produtosExistentes = await fetchAllFromBubble('1 - produtos_25marco');
@@ -732,18 +787,19 @@ async function syncWithBubble(csvData, gorduraValor) {
       const produtosParaCriar = [];
       
       for (const operacao of operacoesProdutos) {
-        // Verificação no mapa de produtos existentes
-        if (!produtoMap.has(operacao.codigo) && !produtosExistentesMap.has(operacao.codigo)) {
+        // Verificação no mapa de produtos existentes usando ID único
+        if (!produtoMap.has(operacao.id_unico) && !produtosExistentesMap.has(operacao.id_unico)) {
           produtosParaCriar.push(operacao);
-        } else if (produtosExistentesMap.has(operacao.codigo)) {
+        } else if (produtosExistentesMap.has(operacao.id_unico)) {
           // Produto já existe, adicionar ao mapa local
-          const produto = produtosExistentesMap.get(operacao.codigo);
-          produtoMap.set(operacao.codigo, {
+          const produto = produtosExistentesMap.get(operacao.id_unico);
+          produtoMap.set(operacao.id_unico, {
             _id: produto._id,
             id_planilha: produto.id_planilha,
-            nome_completo: produto.nome_completo
+            nome_completo: produto.nome_completo,
+            codigo_original: produto.codigo_original
           });
-          console.log(`📋 Produto ${operacao.codigo} já existe, pulando criação`);
+          console.log(`📋 Produto ${operacao.id_unico} já existe, pulando criação`);
         }
       }
       
@@ -754,15 +810,18 @@ async function syncWithBubble(csvData, gorduraValor) {
           produtosParaCriar,
           async (operacao) => {
             // Verificação final antes de criar
-            if (produtoMap.has(operacao.codigo)) {
-              return { skipped: true, codigo: operacao.codigo };
+            if (produtoMap.has(operacao.id_unico)) {
+              return { skipped: true, id_unico: operacao.id_unico };
             }
             
+            console.log(`📦 Criando produto: ID="${operacao.id_unico}" | Código="${operacao.dados.codigo_original}"`);
+            
             const novoProduto = await createInBubble('1 - produtos_25marco', operacao.dados);
-            produtoMap.set(operacao.codigo, {
+            produtoMap.set(operacao.id_unico, {
               _id: novoProduto.id,
-              id_planilha: operacao.codigo,
-              nome_completo: operacao.dados.nome_completo
+              id_planilha: operacao.id_unico,
+              nome_completo: operacao.dados.nome_completo,
+              codigo_original: operacao.dados.codigo_original
             });
             return novoProduto;
           }
@@ -772,26 +831,29 @@ async function syncWithBubble(csvData, gorduraValor) {
       }
     }
     
-    // 4.3 Processar relações em lotes
-    console.log('\n🔗 Processando relações...');
+    // 4.3 ✅ Processar relações em lotes usando ID único
+    console.log('\n🔗 Processando relações com nova lógica...');
     const { results: relacaoResults, errors: relacaoErrors } = await processBatch(
       operacoesRelacoes,
       async (operacao) => {
         const fornecedor = fornecedorMap.get(operacao.loja);
-        const produto = produtoMap.get(operacao.codigo);
+        const produto = produtoMap.get(operacao.id_unico); // ✅ Usar ID único
         
         if (!fornecedor || !produto) {
-          throw new Error(`Fornecedor ou produto não encontrado: ${operacao.loja} - ${operacao.codigo}`);
+          throw new Error(`Fornecedor ou produto não encontrado: ${operacao.loja} - ${operacao.id_unico}`);
         }
         
         const chaveRelacao = `${produto._id}-${fornecedor._id}`;
         const relacaoExistente = relacaoMap.get(chaveRelacao);
         
         if (!relacaoExistente) {
-          const novaRelacao =           await createInBubble('1 - ProdutoFornecedor _25marco', {
+          console.log(`🔗 Criando relação: ${operacao.id_unico} (${operacao.codigo_original}) - ${operacao.loja}`);
+          
+          const novaRelacao = await createInBubble('1 - ProdutoFornecedor _25marco', {
             produto: produto._id,
             fornecedor: fornecedor._id,
             nome_produto: operacao.modelo,
+            codigo_original: operacao.codigo_original, // ✅ Salvar código original
             preco_original: operacao.precoOriginal,
             preco_final: operacao.precoFinal,
             preco_ordenacao: operacao.precoOrdenacao,
@@ -799,7 +861,10 @@ async function syncWithBubble(csvData, gorduraValor) {
           });
           return { tipo: 'criada', resultado: novaRelacao };
         } else if (relacaoExistente.preco_original !== operacao.precoOriginal) {
+          console.log(`🔗 Atualizando relação: ${operacao.id_unico} (${operacao.codigo_original}) - ${operacao.loja}`);
+          
           const relacaoAtualizada = await updateInBubble('1 - ProdutoFornecedor _25marco', relacaoExistente._id, {
+            codigo_original: operacao.codigo_original, // ✅ Atualizar código original também
             preco_original: operacao.precoOriginal,
             preco_final: operacao.precoFinal,
             preco_ordenacao: operacao.precoOrdenacao
@@ -815,11 +880,11 @@ async function syncWithBubble(csvData, gorduraValor) {
     results.relacoes_atualizadas = relacaoResults.filter(r => r.success && r.result?.tipo === 'atualizada').length;
     results.erros.push(...relacaoErrors);
     
-    // 4.4 APLICAR LÓGICA DE COTAÇÃO DIÁRIA
-    console.log('\n🧹 Aplicando lógica de cotação diária...');
+    // 4.4 ✅ APLICAR LÓGICA DE COTAÇÃO DIÁRIA usando ID único
+    console.log('\n🧹 Aplicando lógica de cotação diária com nova lógica...');
     const operacoesZeramento = [];
     
-    for (const [lojaName, codigosCotadosHoje] of codigosCotadosPorFornecedor) {
+    for (const [lojaName, idsCotadosHoje] of idsCotadosPorFornecedor) {
       const fornecedor = fornecedorMap.get(lojaName);
       if (!fornecedor) continue;
       
@@ -829,14 +894,15 @@ async function syncWithBubble(csvData, gorduraValor) {
         const produto = produtos.find(p => p._id === relacao.produto);
         if (!produto) continue;
         
-        const codigoProduto = produto.id_planilha;
-        const foiCotadoHoje = codigosCotadosHoje.has(codigoProduto);
+        const idUnicoProduto = produto.id_planilha; // ✅ ID único está em id_planilha
+        const foiCotadoHoje = idsCotadosHoje.has(idUnicoProduto);
         const temPreco = relacao.preco_original > 0;
         
         if (!foiCotadoHoje && temPreco) {
+          console.log(`🧹 Zerando produto não cotado: ${idUnicoProduto} - ${lojaName}`);
           operacoesZeramento.push({
             relacaoId: relacao._id,
-            codigo: codigoProduto,
+            id_unico: idUnicoProduto,
             loja: lojaName
           });
         }
@@ -859,7 +925,7 @@ async function syncWithBubble(csvData, gorduraValor) {
       results.erros.push(...zeramentoErrors);
     }
     
-    console.log('\n✅ Sincronização otimizada concluída!');
+    console.log('\n✅ Sincronização otimizada concluída com nova lógica!');
     console.log('📊 Resultados da sincronização:', results);
     
     // === ESTA É A ÚLTIMA COISA QUE O CÓDIGO FAZ ===
@@ -886,6 +952,7 @@ app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
   try {
     console.log('\n🚀 === NOVA REQUISIÇÃO ===');
     console.log('📤 Arquivo:', req.file ? req.file.originalname : 'Nenhum');
+    console.log('🔧 APLICANDO CORREÇÃO PARA "SEM CÓDIGO"...');
     
     if (!req.file) {
       return res.status(400).json({ 
@@ -913,7 +980,7 @@ app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
     }
     
     // Processar o CSV
-    console.log('⏱️ Iniciando processamento otimizado...');
+    console.log('⏱️ Iniciando processamento otimizado com correção...');
     const startTime = Date.now();
     
     const csvData = await processCSV(filePath);
@@ -933,13 +1000,20 @@ app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
     // Retornar resultado
     res.json({
       success: true,
-      message: 'CSV processado e sincronizado com sucesso',
+      message: 'CSV processado e sincronizado com sucesso - CORREÇÃO APLICADA',
+      correcao_aplicada: {
+        descricao: 'Produtos com código vazio ou "SEM CÓDIGO" agora usam o modelo como ID único',
+        produtos_sem_codigo: syncResults.produtos_sem_codigo_processados,
+        produtos_com_codigo: syncResults.produtos_com_codigo_processados
+      },
       gordura_valor: gorduraValor,
       tempo_processamento: processingTime + 's',
       tamanho_arquivo: (req.file.size / 1024 / 1024).toFixed(2) + ' MB',
       dados_csv: csvData.map(loja => ({
         loja: loja.loja,
-        total_produtos: loja.total_produtos
+        total_produtos: loja.total_produtos,
+        produtos_sem_codigo: loja.produtos_sem_codigo,
+        produtos_com_codigo: loja.produtos_com_codigo
       })),
       resultados_sincronizacao: syncResults,
       estatisticas_processamento: {
@@ -993,6 +1067,7 @@ app.post('/force-recalculate', async (req, res) => {
     });
   }
 });
+
 app.get('/stats', async (req, res) => {
   try {
     const [fornecedores, produtos, produtoFornecedores] = await Promise.all([
@@ -1001,14 +1076,24 @@ app.get('/stats', async (req, res) => {
       fetchAllFromBubble('1 - ProdutoFornecedor _25marco')
     ]);
     
+    // ✅ Contar produtos com/sem código
+    const produtosComCodigo = produtos.filter(p => p.codigo_original && p.codigo_original.trim() !== '').length;
+    const produtosSemCodigo = produtos.filter(p => !p.codigo_original || p.codigo_original.trim() === '').length;
+    
     res.json({
       total_fornecedores: fornecedores.length,
       total_produtos: produtos.length,
+      produtos_com_codigo: produtosComCodigo,
+      produtos_sem_codigo: produtosSemCodigo,
       total_relacoes: produtoFornecedores.length,
       fornecedores_ativos: fornecedores.filter(f => f.status_ativo === 'yes').length,
       produtos_com_preco: produtos.filter(p => p.menor_preco > 0).length,
       relacoes_ativas: produtoFornecedores.filter(pf => pf.status_ativo === 'yes').length,
       relacoes_com_preco: produtoFornecedores.filter(pf => pf.preco_final > 0).length,
+      correcao_sem_codigo: {
+        aplicada: true,
+        descricao: 'Produtos SEM CÓDIGO agora são identificados pelo modelo'
+      },
       timestamp: new Date().toISOString()
     });
     
@@ -1020,19 +1105,20 @@ app.get('/stats', async (req, res) => {
   }
 });
 
-// Rota para buscar produto específico - CORRIGIDA SEM CONSTRAINTS
-app.get('/produto/:codigo', async (req, res) => {
+// ✅ Rota para buscar produto específico - CORRIGIDA COM ID ÚNICO
+app.get('/produto/:id_unico', async (req, res) => {
   try {
-    const codigo = req.params.codigo;
-    console.log(`🔍 Buscando produto: ${codigo}`);
+    const idUnico = req.params.id_unico;
+    console.log(`🔍 Buscando produto: ${idUnico}`);
     
-    // Buscar TODOS os produtos e filtrar localmente
+    // Buscar TODOS os produtos e filtrar localmente usando ID único
     const todosProdutos = await fetchAllFromBubble('1 - produtos_25marco');
-    const produto = todosProdutos.find(p => p.id_planilha === codigo);
+    const produto = todosProdutos.find(p => p.id_planilha === idUnico);
     
     if (!produto) {
       return res.status(404).json({
-        error: 'Produto não encontrado'
+        error: 'Produto não encontrado',
+        id_buscado: idUnico
       });
     }
     
@@ -1055,6 +1141,7 @@ app.get('/produto/:codigo', async (req, res) => {
       const fornecedor = fornecedorMap.get(r.fornecedor);
       return {
         fornecedor: fornecedor?.nome_fornecedor || 'Desconhecido',
+        codigo_original: r.codigo_original || '', // ✅ Mostrar código original
         preco_original: r.preco_original,
         preco_final: r.preco_final,
         melhor_preco: r.melhor_preco,
@@ -1062,7 +1149,7 @@ app.get('/produto/:codigo', async (req, res) => {
       };
     });
     
-    // Recalcular estatísticas em tempo real para debugging - SEM STATUS_ATIVO
+    // Recalcular estatísticas em tempo real para debugging
     const relacoesAtivas = relacoes.filter(r => r.preco_final > 0);
     const precosValidos = relacoesAtivas.map(r => r.preco_final);
     const statsCalculadas = {
@@ -1081,11 +1168,16 @@ app.get('/produto/:codigo', async (req, res) => {
     
     res.json({
       produto: {
-        codigo: produto.id_planilha,
+        id_unico: produto.id_planilha,        // ✅ ID único
+        codigo_original: produto.codigo_original || '', // ✅ Código original
         nome: produto.nome_completo,
         preco_menor: produto.menor_preco,
         preco_medio: produto.preco_medio,
         qtd_fornecedores: produto.qtd_fornecedores
+      },
+      correcao_aplicada: {
+        id_baseado_em: produto.codigo_original && produto.codigo_original.trim() !== '' ? 'código' : 'modelo',
+        codigo_original_vazio: !produto.codigo_original || produto.codigo_original.trim() === ''
       },
       stats_calculadas_tempo_real: statsCalculadas,
       relacoes: relacoesDetalhadas.sort((a, b) => a.preco_final - b.preco_final),
@@ -1112,7 +1204,11 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     message: 'API funcionando corretamente',
-    version: '4.0.0-optimized',
+    version: '4.1.0-sem-codigo-fix',
+    correcao_aplicada: {
+      descricao: 'Correção para produtos SEM CÓDIGO aplicada',
+      versao: '4.1.0'
+    },
     configuracoes: {
       batch_size: PROCESSING_CONFIG.BATCH_SIZE,
       max_concurrent: PROCESSING_CONFIG.MAX_CONCURRENT,
@@ -1190,7 +1286,12 @@ app.get('/performance', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     message: 'API OTIMIZADA para processamento de CSV de produtos com integração Bubble',
-    version: '4.0.0-optimized',
+    version: '4.1.0-sem-codigo-fix',
+    correcao_aplicada: {
+      problema_resolvido: 'Produtos com código "SEM CÓDIGO" não são mais agrupados incorretamente',
+      solucao: 'ID único baseado no modelo quando código for vazio ou "SEM CÓDIGO"',
+      versao_correcao: '4.1.0'
+    },
     melhorias: [
       'Processamento em lotes (batch processing)',
       'Controle de concorrência',
@@ -1200,13 +1301,14 @@ app.get('/', (req, res) => {
       'Monitoramento de performance',
       'Tratamento robusto de erros',
       'Preparação de operações em memória',
-      'Garbage collection otimizado'
+      'Garbage collection otimizado',
+      '🔧 CORREÇÃO: ID único para produtos SEM CÓDIGO'
     ],
     endpoints: {
       'POST /process-csv': 'Envia arquivo CSV com parâmetro gordura_valor e sincroniza com Bubble',
       'POST /force-recalculate': 'EXECUTA a lógica final de recálculo',
-      'GET /stats': 'Retorna estatísticas das tabelas',
-      'GET /produto/:codigo': 'Busca produto específico por código',
+      'GET /stats': 'Retorna estatísticas das tabelas (com contadores de produtos com/sem código)',
+      'GET /produto/:id_unico': 'Busca produto específico por ID único (código ou modelo)',
       'GET /health': 'Verifica status da API',
       'GET /test-bubble': 'Testa conectividade com Bubble',
       'GET /performance': 'Monitora performance do servidor'
@@ -1228,8 +1330,25 @@ app.get('/', (req, res) => {
       'Identificação automática do melhor preço',
       'Sincronização inteligente com Bubble',
       'Processamento otimizado para alto volume',
-      'Monitoramento de erros e performance'
-    ]
+      'Monitoramento de erros e performance',
+      '🔧 CORREÇÃO: Tratamento correto de produtos SEM CÓDIGO'
+    ],
+    como_funciona_correcao: {
+      'antes': 'Todos os produtos "SEM CÓDIGO" eram agrupados como um único produto',
+      'depois': 'Cada produto SEM CÓDIGO é identificado pelo seu modelo como ID único',
+      'exemplo': {
+        'produto_1': {
+          'codigo_csv': 'SEM CÓDIGO',
+          'modelo': 'Xiaomi Redmi A5 128GB Global 4GB Preto 4G',
+          'id_unico_gerado': 'Xiaomi Redmi A5 128GB Global 4GB Preto 4G'
+        },
+        'produto_2': {
+          'codigo_csv': 'SEM CÓDIGO', 
+          'modelo': 'Xiaomi POCO F7 512GB Global 12GB Branco 5G',
+          'id_unico_gerado': 'Xiaomi POCO F7 512GB Global 12GB Branco 5G'
+        }
+      }
+    }
   });
 });
 
@@ -1312,13 +1431,15 @@ app.listen(PORT, () => {
   console.log(`🚀 Servidor OTIMIZADO rodando na porta ${PORT}`);
   console.log(`📊 Acesse: http://localhost:${PORT}`);
   console.log(`🔗 Integração Bubble configurada`);
-  console.log(`⚡ Versão 4.0.0-optimized - Otimizado para alto volume`);
+  console.log(`⚡ Versão 4.1.0-sem-codigo-fix - CORREÇÃO APLICADA`);
+  console.log(`🔧 CORREÇÃO: Produtos SEM CÓDIGO agora são únicos por modelo`);
   console.log(`📈 Configurações de performance:`);
   console.log(`   - Lote: ${PROCESSING_CONFIG.BATCH_SIZE} itens`);
   console.log(`   - Concorrência: ${PROCESSING_CONFIG.MAX_CONCURRENT} operações`);
   console.log(`   - Retry: ${PROCESSING_CONFIG.RETRY_ATTEMPTS} tentativas`);
   console.log(`   - Timeout: ${PROCESSING_CONFIG.REQUEST_TIMEOUT}ms`);
   console.log(`   - Limite arquivo: 100MB`);
+  console.log(`✅ CORREÇÃO SEM CÓDIGO implementada com sucesso!`);
 });
 
 module.exports = app;
