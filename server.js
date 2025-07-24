@@ -222,14 +222,35 @@ async function fetchAllFromBubble(tableName, filters = {}) {
   }
 }
 
-// Função para criar item no Bubble com retry
+// ✅ FUNÇÃO CORRIGIDA: Criar item no Bubble com DEBUG COMPLETO
 async function createInBubble(tableName, data) {
   return await retryOperation(async () => {
-    const response = await axios.post(`${BUBBLE_CONFIG.baseURL}/${tableName}`, data, {
-      headers: BUBBLE_CONFIG.headers,
-      timeout: PROCESSING_CONFIG.REQUEST_TIMEOUT
-    });
-    return response.data;
+    console.log(`🔧 DEBUG CREATE: Tabela=${tableName}`);
+    console.log(`🔧 DEBUG CREATE: Dados=`, JSON.stringify(data, null, 2));
+    console.log(`🔧 DEBUG CREATE: URL=${BUBBLE_CONFIG.baseURL}/${tableName}`);
+    console.log(`🔧 DEBUG CREATE: Headers=`, JSON.stringify(BUBBLE_CONFIG.headers, null, 2));
+    
+    try {
+      const response = await axios.post(`${BUBBLE_CONFIG.baseURL}/${tableName}`, data, {
+        headers: BUBBLE_CONFIG.headers,
+        timeout: PROCESSING_CONFIG.REQUEST_TIMEOUT
+      });
+      
+      console.log(`✅ DEBUG CREATE SUCCESS: Status=${response.status}`);
+      console.log(`✅ DEBUG CREATE SUCCESS: Data=`, JSON.stringify(response.data, null, 2));
+      
+      return response.data;
+    } catch (error) {
+      console.error(`❌ DEBUG CREATE ERROR: Status=${error.response?.status}`);
+      console.error(`❌ DEBUG CREATE ERROR: StatusText=${error.response?.statusText}`);
+      console.error(`❌ DEBUG CREATE ERROR: Data=`, JSON.stringify(error.response?.data, null, 2));
+      console.error(`❌ DEBUG CREATE ERROR: Message=${error.message}`);
+      
+      // Log da URL completa para debug
+      console.error(`❌ DEBUG CREATE ERROR: URL Completa=${BUBBLE_CONFIG.baseURL}/${tableName}`);
+      
+      throw error;
+    }
   });
 }
 
@@ -725,53 +746,82 @@ async function syncWithBubble(csvData, gorduraValor) {
     
     // 4. EXECUTAR OPERAÇÕES EM LOTES
     
-    // 4.1 Criar fornecedores em lotes
+    // 4.1 ✅ CORREÇÃO: Criar fornecedores em lotes - FORÇAR CRIAÇÃO
     if (operacoesFornecedores.length > 0) {
-      console.log('\n👥 Criando fornecedores...');
+      console.log('\n👥 Criando fornecedores (CORREÇÃO APLICADA)...');
       
-      // Buscar TODOS os fornecedores existentes de uma vez
-      const fornecedoresExistentes = await fetchAllFromBubble('1 - fornecedor_25marco');
-      const fornecedoresExistentesMap = new Map();
-      fornecedoresExistentes.forEach(f => fornecedoresExistentesMap.set(f.nome_fornecedor, f));
-      
-      const fornecedoresParaCriar = [];
-      
-      for (const operacao of operacoesFornecedores) {
-        // Verificação no mapa de fornecedores existentes
-        if (!fornecedorMap.has(operacao.nome) && !fornecedoresExistentesMap.has(operacao.nome)) {
-          fornecedoresParaCriar.push(operacao);
-        } else if (fornecedoresExistentesMap.has(operacao.nome)) {
-          // Fornecedor já existe, adicionar ao mapa local
-          const fornecedor = fornecedoresExistentesMap.get(operacao.nome);
-          fornecedorMap.set(operacao.nome, {
-            _id: fornecedor._id,
-            nome_fornecedor: fornecedor.nome_fornecedor
-          });
-          console.log(`📋 Fornecedor ${operacao.nome} já existe, pulando criação`);
-        }
-      }
-      
-      console.log(`👥 Fornecedores únicos para criar: ${fornecedoresParaCriar.length} de ${operacoesFornecedores.length}`);
-      
-      if (fornecedoresParaCriar.length > 0) {
-        const { results: fornecedorResults, errors: fornecedorErrors } = await processBatch(
-          fornecedoresParaCriar,
-          async (operacao) => {
-            // Verificação final antes de criar
-            if (fornecedorMap.has(operacao.nome)) {
-              return { skipped: true, nome: operacao.nome };
-            }
-            
+      const { results: fornecedorResults, errors: fornecedorErrors } = await processBatch(
+        operacoesFornecedores,
+        async (operacao) => {
+          // ✅ CORREÇÃO: Sempre tentar criar, se já existir o Bubble retornará erro mas não falhará
+          try {
+            console.log(`👥 Criando/Verificando fornecedor: ${operacao.nome}`);
             const novoFornecedor = await createInBubble('1 - fornecedor_25marco', operacao.dados);
+            
             fornecedorMap.set(operacao.dados.nome_fornecedor, {
               _id: novoFornecedor.id,
               nome_fornecedor: operacao.dados.nome_fornecedor
             });
-            return novoFornecedor;
+            
+            console.log(`✅ Fornecedor criado: ${operacao.nome} (ID: ${novoFornecedor.id})`);
+            return { created: true, fornecedor: novoFornecedor };
+            
+          } catch (error) {
+            // Se fornecedor já existe, buscar o existente
+            if (error.message && error.message.includes('already exists')) {
+              console.log(`📋 Fornecedor ${operacao.nome} já existe, buscando ID...`);
+              
+              // Buscar fornecedor existente
+              const fornecedoresExistentes = await fetchAllFromBubble('1 - fornecedor_25marco', {
+                constraints: JSON.stringify([{
+                  key: 'nome_fornecedor',
+                  constraint_type: 'equals',
+                  value: operacao.nome
+                }])
+              });
+              
+              if (fornecedoresExistentes.length > 0) {
+                const fornecedorExistente = fornecedoresExistentes[0];
+                fornecedorMap.set(operacao.nome, {
+                  _id: fornecedorExistente._id,
+                  nome_fornecedor: fornecedorExistente.nome_fornecedor
+                });
+                console.log(`✅ Fornecedor existente encontrado: ${operacao.nome} (ID: ${fornecedorExistente._id})`);
+                return { existing: true, fornecedor: fornecedorExistente };
+              }
+            }
+            
+            // Se não conseguiu nem criar nem encontrar, tentar buscar por nome
+            console.warn(`⚠️ Erro ao criar fornecedor ${operacao.nome}, tentando busca manual...`);
+            const todosFornecedores = await fetchAllFromBubble('1 - fornecedor_25marco');
+            const fornecedorEncontrado = todosFornecedores.find(f => f.nome_fornecedor === operacao.nome);
+            
+            if (fornecedorEncontrado) {
+              fornecedorMap.set(operacao.nome, {
+                _id: fornecedorEncontrado._id,
+                nome_fornecedor: fornecedorEncontrado.nome_fornecedor
+              });
+              console.log(`✅ Fornecedor encontrado na busca manual: ${operacao.nome} (ID: ${fornecedorEncontrado._id})`);
+              return { found: true, fornecedor: fornecedorEncontrado };
+            }
+            
+            throw error; // Se realmente não conseguiu, relançar erro
           }
-        );
-        results.fornecedores_criados = fornecedorResults.filter(r => r.success && !r.result?.skipped).length;
-        results.erros.push(...fornecedorErrors);
+        }
+      );
+      
+      const fornecedoresCriados = fornecedorResults.filter(r => r.success && r.result?.created).length;
+      const fornecedoresExistentes = fornecedorResults.filter(r => r.success && (r.result?.existing || r.result?.found)).length;
+      
+      console.log(`✅ Fornecedores processados: ${fornecedoresCriados} criados, ${fornecedoresExistentes} já existiam`);
+      
+      results.fornecedores_criados = fornecedoresCriados;
+      results.erros.push(...fornecedorErrors);
+      
+      // ✅ VERIFICAÇÃO FINAL: Garantir que todos os fornecedores estão no mapa
+      console.log(`📊 Fornecedores no mapa após criação: ${fornecedorMap.size}`);
+      for (const [nome, fornecedor] of fornecedorMap) {
+        console.log(`📋 Fornecedor mapeado: ${nome} → ID: ${fornecedor._id}`);
       }
     }
     
@@ -831,29 +881,83 @@ async function syncWithBubble(csvData, gorduraValor) {
       }
     }
     
-    // 4.3 ✅ Processar relações em lotes usando ID único
-    console.log('\n🔗 Processando relações com nova lógica...');
+    // 4.3 ✅ CORREÇÃO: Processar relações com verificação robusta
+    console.log('\n🔗 Processando relações com verificação robusta...');
+    
+    // ✅ VERIFICAÇÃO PRÉVIA: Garantir que fornecedores estão mapeados
+    const fornecedoresNecessarios = new Set(operacoesRelacoes.map(op => op.loja));
+    console.log(`🔍 Fornecedores necessários: ${Array.from(fornecedoresNecessarios).join(', ')}`);
+    
+    for (const nomeFornecedor of fornecedoresNecessarios) {
+      if (!fornecedorMap.has(nomeFornecedor)) {
+        console.error(`❌ ERRO CRÍTICO: Fornecedor ${nomeFornecedor} não está no mapa!`);
+        
+        // Tentar buscar manualmente
+        const todosFornecedores = await fetchAllFromBubble('1 - fornecedor_25marco');
+        const fornecedorEncontrado = todosFornecedores.find(f => f.nome_fornecedor === nomeFornecedor);
+        
+        if (fornecedorEncontrado) {
+          fornecedorMap.set(nomeFornecedor, {
+            _id: fornecedorEncontrado._id,
+            nome_fornecedor: fornecedorEncontrado.nome_fornecedor
+          });
+          console.log(`✅ Fornecedor recuperado: ${nomeFornecedor} (ID: ${fornecedorEncontrado._id})`);
+        } else {
+          console.error(`❌ Fornecedor ${nomeFornecedor} realmente não existe! Criando emergencialmente...`);
+          
+          try {
+            const novoFornecedor = await createInBubble('1 - fornecedor_25marco', {
+              nome_fornecedor: nomeFornecedor
+            });
+            
+            fornecedorMap.set(nomeFornecedor, {
+              _id: novoFornecedor.id,
+              nome_fornecedor: nomeFornecedor
+            });
+            
+            console.log(`✅ Fornecedor criado emergencialmente: ${nomeFornecedor} (ID: ${novoFornecedor.id})`);
+          } catch (error) {
+            console.error(`❌ FALHA CRÍTICA: Não foi possível criar fornecedor ${nomeFornecedor}:`, error.message);
+          }
+        }
+      }
+    }
+    
+    // ✅ LOG FINAL DOS FORNECEDORES MAPEADOS
+    console.log(`📊 STATUS FINAL DOS FORNECEDORES:`);
+    for (const [nome, fornecedor] of fornecedorMap) {
+      console.log(`   ✅ ${nome} → ID: ${fornecedor._id}`);
+    }
+    
     const { results: relacaoResults, errors: relacaoErrors } = await processBatch(
       operacoesRelacoes,
-      async (operacao) => {
+      async (operacao, index) => {
         const fornecedor = fornecedorMap.get(operacao.loja);
-        const produto = produtoMap.get(operacao.id_unico); // ✅ Usar ID único
+        const produto = produtoMap.get(operacao.id_unico);
         
-        if (!fornecedor || !produto) {
-          throw new Error(`Fornecedor ou produto não encontrado: ${operacao.loja} - ${operacao.id_unico}`);
+        if (!fornecedor) {
+          console.error(`❌ Item ${index}: Fornecedor não encontrado: ${operacao.loja}`);
+          throw new Error(`Fornecedor não encontrado: ${operacao.loja}`);
         }
+        
+        if (!produto) {
+          console.error(`❌ Item ${index}: Produto não encontrado: ${operacao.id_unico}`);
+          throw new Error(`Produto não encontrado: ${operacao.id_unico}`);
+        }
+        
+        console.log(`🔗 Item ${index}: Processando ${operacao.id_unico} (${operacao.codigo_original}) - ${operacao.loja} - Fornecedor ID: ${fornecedor._id}, Produto ID: ${produto._id}`);
         
         const chaveRelacao = `${produto._id}-${fornecedor._id}`;
         const relacaoExistente = relacaoMap.get(chaveRelacao);
         
         if (!relacaoExistente) {
-          console.log(`🔗 Criando relação: ${operacao.id_unico} (${operacao.codigo_original}) - ${operacao.loja}`);
+          console.log(`🔗 Item ${index}: Criando nova relação`);
           
           const novaRelacao = await createInBubble('1 - ProdutoFornecedor _25marco', {
             produto: produto._id,
             fornecedor: fornecedor._id,
             nome_produto: operacao.modelo,
-            codigo_original: operacao.codigo_original, // ✅ Salvar código original
+            codigo_original: operacao.codigo_original,
             preco_original: operacao.precoOriginal,
             preco_final: operacao.precoFinal,
             preco_ordenacao: operacao.precoOrdenacao,
@@ -861,10 +965,10 @@ async function syncWithBubble(csvData, gorduraValor) {
           });
           return { tipo: 'criada', resultado: novaRelacao };
         } else if (relacaoExistente.preco_original !== operacao.precoOriginal) {
-          console.log(`🔗 Atualizando relação: ${operacao.id_unico} (${operacao.codigo_original}) - ${operacao.loja}`);
+          console.log(`🔗 Item ${index}: Atualizando relação existente`);
           
           const relacaoAtualizada = await updateInBubble('1 - ProdutoFornecedor _25marco', relacaoExistente._id, {
-            codigo_original: operacao.codigo_original, // ✅ Atualizar código original também
+            codigo_original: operacao.codigo_original,
             preco_original: operacao.precoOriginal,
             preco_final: operacao.precoFinal,
             preco_ordenacao: operacao.precoOrdenacao
@@ -1219,43 +1323,97 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Rota para testar conectividade com Bubble
-app.get('/test-bubble', async (req, res) => {
+// ✅ ROTA DE TESTE ESPECÍFICA PARA BUBBLE - DIAGNÓSTICO COMPLETO
+app.post('/test-bubble-create', async (req, res) => {
   try {
-    console.log('🧪 Testando conectividade com Bubble...');
+    console.log('\n🧪 === TESTE DE CRIAÇÃO NO BUBBLE - DIAGNÓSTICO COMPLETO ===');
     
-    const testResponse = await axios.get(`${BUBBLE_CONFIG.baseURL}/1 - fornecedor_25marco`, {
+    // 1. TESTAR CONECTIVIDADE BÁSICA
+    console.log('🔍 1. Testando conectividade básica...');
+    try {
+      const testGet = await axios.get(`${BUBBLE_CONFIG.baseURL}/1 - fornecedor_25marco`, {
+        headers: BUBBLE_CONFIG.headers,
+        params: { limit: 1 },
+        timeout: 10000
+      });
+      console.log(`✅ GET funcionou: Status ${testGet.status}`);
+    } catch (error) {
+      console.error(`❌ GET falhou:`, error.response?.status, error.response?.data);
+      return res.status(500).json({
+        error: 'Falha na conectividade básica',
+        details: error.response?.data
+      });
+    }
+    
+    // 2. TESTAR CRIAÇÃO DE FORNECEDOR
+    console.log('🔍 2. Testando criação de fornecedor...');
+    const dadosFornecedor = {
+      nome_fornecedor: `Teste Fornecedor ${Date.now()}`
+    };
+    
+    try {
+      console.log(`🔧 Tentando criar fornecedor:`, dadosFornecedor);
+      const fornecedorResult = await createInBubble('1 - fornecedor_25marco', dadosFornecedor);
+      console.log(`✅ Fornecedor criado com sucesso:`, fornecedorResult);
+    } catch (error) {
+      console.error(`❌ Erro ao criar fornecedor:`, error.response?.status, error.response?.data);
+      return res.status(500).json({
+        error: 'Falha na criação de fornecedor',
+        status: error.response?.status,
+        details: error.response?.data,
+        url: `${BUBBLE_CONFIG.baseURL}/1 - fornecedor_25marco`,
+        dados_enviados: dadosFornecedor
+      });
+    }
+    
+    // 3. TESTAR CRIAÇÃO DE PRODUTO
+    console.log('🔍 3. Testando criação de produto...');
+    const dadosProduto = {
+      id_planilha: `TESTE_${Date.now()}`,
+      codigo_original: 'TEST123',
+      nome_completo: 'Produto de Teste',
+      preco_medio: 0,
+      qtd_fornecedores: 0,
+      menor_preco: 0
+    };
+    
+    try {
+      console.log(`🔧 Tentando criar produto:`, dadosProduto);
+      const produtoResult = await createInBubble('1 - produtos_25marco', dadosProduto);
+      console.log(`✅ Produto criado com sucesso:`, produtoResult);
+    } catch (error) {
+      console.error(`❌ Erro ao criar produto:`, error.response?.status, error.response?.data);
+      return res.status(500).json({
+        error: 'Falha na criação de produto',
+        status: error.response?.status,
+        details: error.response?.data,
+        url: `${BUBBLE_CONFIG.baseURL}/1 - produtos_25marco`,
+        dados_enviados: dadosProduto
+      });
+    }
+    
+    // 4. VERIFICAR CONFIGURAÇÕES
+    console.log('🔍 4. Verificando configurações...');
+    const config_debug = {
+      baseURL: BUBBLE_CONFIG.baseURL,
+      token: BUBBLE_CONFIG.token ? `${BUBBLE_CONFIG.token.substring(0, 8)}...` : 'VAZIO',
       headers: BUBBLE_CONFIG.headers,
-      params: { limit: 1 },
-      timeout: 10000
-    });
+      timeout: PROCESSING_CONFIG.REQUEST_TIMEOUT
+    };
     
     res.json({
       success: true,
-      message: 'Conectividade com Bubble OK',
-      bubble_response: {
-        status: testResponse.status,
-        count: testResponse.data?.response?.count || 0,
-        remaining: testResponse.data?.response?.remaining || 0
-      },
-      config: {
-        baseURL: BUBBLE_CONFIG.baseURL,
-        hasToken: !!BUBBLE_CONFIG.token,
-        timeout: PROCESSING_CONFIG.REQUEST_TIMEOUT
-      },
+      message: 'Testes concluídos com sucesso',
+      configuracoes: config_debug,
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
+    console.error('❌ Erro no teste:', error);
     res.status(500).json({
-      success: false,
-      error: 'Erro de conectividade com Bubble',
-      details: {
-        message: error.message,
-        status: error.response?.status,
-        timeout: error.code === 'ECONNABORTED'
-      },
-      timestamp: new Date().toISOString()
+      error: 'Erro no teste de criação',
+      details: error.message,
+      stack: error.stack
     });
   }
 });
