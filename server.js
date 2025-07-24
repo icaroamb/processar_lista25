@@ -699,8 +699,8 @@ async function syncWithBubble(csvData, gorduraValor) {
       };
     }
     
-    // 3. PREPARAR OPERAÇÕES COM BUSCA DUPLA ANTI-DUPLICAÇÃO
-    console.log('\n📝 Preparando operações com busca dupla...');
+    // 3. PREPARAR OPERAÇÕES COM BUSCA DUPLA ANTI-DUPLICAÇÃO (CORRIGIDA DE VERDADE)
+    console.log('\n📝 Preparando operações com busca dupla REAL...');
     const operacoesFornecedores = [];
     const operacoesProdutos = [];
     const operacoesAtualizacaoProdutos = [];
@@ -728,7 +728,7 @@ async function syncWithBubble(csvData, gorduraValor) {
         });
       }
       
-      // 3.2 Processar produtos da loja com BUSCA DUPLA
+      // 3.2 Processar produtos da loja com BUSCA DUPLA REAL
       for (const produtoCsv of lojaData.produtos) {
         const codigo = produtoCsv.codigo;
         const modelo = produtoCsv.modelo;
@@ -746,7 +746,8 @@ async function syncWithBubble(csvData, gorduraValor) {
         const tipoEncontrado = resultadoBusca.tipo_encontrado;
         
         if (produtoExistente) {
-          // PRODUTO JÁ EXISTE - Verificar se precisa atualizar
+          // PRODUTO JÁ EXISTE - PARAR AQUI E NÃO CRIAR DUPLICATA!
+          console.log(`✅ PRODUTO ENCONTRADO - NÃO CRIANDO: ${tipoEncontrado === 'codigo' ? codigo : modelo}`);
           
           // Cenário especial: produto foi encontrado por nome mas agora tem código válido
           if (tipoEncontrado === 'nome' && isCodigoValido(codigo) && 
@@ -778,14 +779,17 @@ async function syncWithBubble(csvData, gorduraValor) {
             }
           }
           
-          console.log(`✅ Produto já existe, não criando duplicata: ${tipoEncontrado === 'codigo' ? codigo : modelo}`);
+          // *** IMPORTANTE: NÃO ADICIONAR À LISTA DE CRIAÇÃO! ***
+          // Produto já existe, apenas vai para as relações
           
         } else {
-          // PRODUTO NÃO EXISTE - Criar novo
+          // PRODUTO REALMENTE NÃO EXISTE - PODE CRIAR
           const produtoInfo = gerarIdentificadorProduto(codigo, modelo);
           
           if (produtoInfo && !produtosProcessados.has(produtoInfo.identificador)) {
             produtosProcessados.add(produtoInfo.identificador);
+            
+            console.log(`➕ PRODUTO NOVO PARA CRIAR: ${produtoInfo.identificador} (${produtoInfo.tipo})`);
             
             operacoesProdutos.push({
               tipo: 'criar',
@@ -812,17 +816,17 @@ async function syncWithBubble(csvData, gorduraValor) {
             } else {
               produtoMapPorNome.set(produtoInfo.identificador, produtoTemp);
             }
-            
-            console.log(`➕ Novo produto para criar: ${produtoInfo.identificador} (${produtoInfo.tipo})`);
+          } else {
+            console.log(`⚠️ PRODUTO JÁ PROCESSADO NESTE LOTE: ${produtoInfo?.identificador}`);
           }
         }
         
-        // Calcular preços
+        // Calcular preços para TODAS as relações (produtos existentes ou novos)
         const precoOriginal = produtoCsv.preco;
         const precoFinal = precoOriginal === 0 ? 0 : precoOriginal + gorduraValor;
         const precoOrdenacao = precoOriginal === 0 ? 999999 : precoOriginal;
         
-        // Preparar operação de relação
+        // Preparar operação de relação (SEMPRE, para produtos existentes ou novos)
         operacoesRelacoes.push({
           tipo: 'processar',
           loja: lojaData.loja,
