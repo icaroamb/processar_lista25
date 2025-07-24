@@ -935,48 +935,72 @@ async function syncWithBubble(csvData, gorduraValor) {
         const fornecedor = fornecedorMap.get(operacao.loja);
         const produto = produtoMap.get(operacao.id_unico);
         
+        // ✅ CORREÇÃO URGENTE: Verificar se produto/fornecedor existem ANTES de usar
+        const fornecedor = fornecedorMap.get(operacao.loja);
+        const produto = produtoMap.get(operacao.id_unico);
+        
         if (!fornecedor) {
-          console.error(`❌ Item ${index}: Fornecedor não encontrado: ${operacao.loja}`);
+          console.error(`❌ Item ${index}: Fornecedor ${operacao.loja} NÃO ENCONTRADO no mapa!`);
+          console.error(`❌ Fornecedores disponíveis:`, Array.from(fornecedorMap.keys()));
           throw new Error(`Fornecedor não encontrado: ${operacao.loja}`);
         }
         
         if (!produto) {
-          console.error(`❌ Item ${index}: Produto não encontrado: ${operacao.id_unico}`);
+          console.error(`❌ Item ${index}: Produto ${operacao.id_unico} NÃO ENCONTRADO no mapa!`);
+          console.error(`❌ Produtos disponíveis:`, Array.from(produtoMap.keys()).slice(0, 5));
           throw new Error(`Produto não encontrado: ${operacao.id_unico}`);
         }
         
-        console.log(`🔗 Item ${index}: Processando ${operacao.id_unico} (${operacao.codigo_original}) - ${operacao.loja} - Fornecedor ID: ${fornecedor._id}, Produto ID: ${produto._id}`);
+        console.log(`🔗 Item ${index}: DADOS CONFIRMADOS - Fornecedor: ${fornecedor.nome_fornecedor} (ID: ${fornecedor._id}), Produto: ${produto.nome_completo} (ID: ${produto._id})`);
         
         const chaveRelacao = `${produto._id}-${fornecedor._id}`;
         const relacaoExistente = relacaoMap.get(chaveRelacao);
         
-        if (!relacaoExistente) {
-          console.log(`🔗 Item ${index}: Criando nova relação`);
-          
-          const novaRelacao = await createInBubble('1 - ProdutoFornecedor _25marco', {
-            produto: produto._id,
-            fornecedor: fornecedor._id,
-            nome_produto: operacao.modelo,
-            codigo_original: operacao.codigo_original,
-            preco_original: operacao.precoOriginal,
-            preco_final: operacao.precoFinal,
-            preco_ordenacao: operacao.precoOrdenacao,
-            melhor_preco: false
-          });
-          return { tipo: 'criada', resultado: novaRelacao };
-        } else if (relacaoExistente.preco_original !== operacao.precoOriginal) {
-          console.log(`🔗 Item ${index}: Atualizando relação existente`);
-          
-          const relacaoAtualizada = await updateInBubble('1 - ProdutoFornecedor _25marco', relacaoExistente._id, {
-            codigo_original: operacao.codigo_original,
-            preco_original: operacao.precoOriginal,
-            preco_final: operacao.precoFinal,
-            preco_ordenacao: operacao.precoOrdenacao
-          });
-          return { tipo: 'atualizada', resultado: relacaoAtualizada };
-        }
+        // ✅ DADOS CORRETOS PARA CRIAÇÃO DA RELAÇÃO (SEM codigo_original)
+        const dadosRelacao = {
+          produto: produto._id,
+          fornecedor: fornecedor._id,
+          nome_produto: operacao.modelo,
+          preco_original: operacao.precoOriginal,
+          preco_final: operacao.precoFinal,
+          preco_ordenacao: operacao.precoOrdenacao,
+          melhor_preco: 'no' // ✅ Inicializar como 'no'
+          // ❌ REMOVIDO: codigo_original (CAMPO NÃO EXISTE!)
+        };
         
-        return { tipo: 'inalterada' };
+        console.log(`🔗 Item ${index}: Dados da relação:`, JSON.stringify(dadosRelacao, null, 2));
+        
+        if (!relacaoExistente) {
+          console.log(`🔗 Item ${index}: Criando NOVA relação`);
+          
+          try {
+            const novaRelacao = await createInBubble('1 - ProdutoFornecedor _25marco', dadosRelacao);
+            console.log(`✅ Item ${index}: Relação criada com sucesso! ID: ${novaRelacao.id}`);
+            return { tipo: 'criada', resultado: novaRelacao };
+          } catch (error) {
+            console.error(`❌ Item ${index}: ERRO ao criar relação:`, error.response?.data || error.message);
+            throw error;
+          }
+        } else if (relacaoExistente.preco_original !== operacao.precoOriginal) {
+          console.log(`🔗 Item ${index}: Atualizando relação existente ID: ${relacaoExistente._id}`);
+          
+          try {
+            const relacaoAtualizada = await updateInBubble('1 - ProdutoFornecedor _25marco', relacaoExistente._id, {
+              preco_original: operacao.precoOriginal,
+              preco_final: operacao.precoFinal,
+              preco_ordenacao: operacao.precoOrdenacao
+              // ❌ REMOVIDO: codigo_original (CAMPO NÃO EXISTE!)
+            });
+            console.log(`✅ Item ${index}: Relação atualizada com sucesso!`);
+            return { tipo: 'atualizada', resultado: relacaoAtualizada };
+          } catch (error) {
+            console.error(`❌ Item ${index}: ERRO ao atualizar relação:`, error.response?.data || error.message);
+            throw error;
+          }
+        } else {
+          console.log(`🔗 Item ${index}: Relação inalterada (mesmo preço)`);
+          return { tipo: 'inalterada' };
+        }
       }
     );
     
@@ -1029,14 +1053,24 @@ async function syncWithBubble(csvData, gorduraValor) {
       results.erros.push(...zeramentoErrors);
     }
     
-    console.log('\n✅ Sincronização otimizada concluída com nova lógica!');
+    // ✅ FORÇAR EXECUÇÃO DA LÓGICA FINAL MESMO COM ERROS NAS RELAÇÕES
+    console.log('\n✅ Sincronização concluída - FORÇANDO lógica final...');
     console.log('📊 Resultados da sincronização:', results);
     
-    // === ESTA É A ÚLTIMA COISA QUE O CÓDIGO FAZ ===
-    // === EXECUTAR A LÓGICA FINAL CORRETA ===
-    console.log('\n🔥 EXECUTANDO LÓGICA FINAL CORRETA - ÚLTIMA COISA DO CÓDIGO!');
-    const logicaFinalResults = await executarLogicaFinalCorreta();
-    console.log('🔥 Lógica final correta concluída:', logicaFinalResults);
+    // === EXECUTAR LÓGICA FINAL SEMPRE ===
+    console.log('\n🔥 EXECUTANDO LÓGICA FINAL CORRETA - FORÇADAMENTE!');
+    let logicaFinalResults;
+    try {
+      logicaFinalResults = await executarLogicaFinalCorreta();
+      console.log('🔥 Lógica final correta concluída:', logicaFinalResults);
+    } catch (error) {
+      console.error('❌ ERRO na lógica final, mas continuando...', error.message);
+      logicaFinalResults = { 
+        erro: error.message, 
+        executou: false,
+        motivo: 'Falha na execução da lógica final'
+      };
+    }
     
     return {
       ...results,
@@ -1142,30 +1176,34 @@ app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
   }
 });
 
-// Rota para EXECUTAR LÓGICA FINAL CORRETA
-app.post('/force-recalculate', async (req, res) => {
+// ✅ ROTA EMERGENCIAL: Executar só a lógica final para calcular preços
+app.post('/emergency-calculate', async (req, res) => {
   try {
-    console.log('\n🔥 === EXECUTANDO LÓGICA FINAL CORRETA MANUALMENTE ===');
+    console.log('\n🚨 === EXECUÇÃO EMERGENCIAL DA LÓGICA FINAL ===');
+    console.log('🎯 Objetivo: Calcular preços e melhor_preco para todos os produtos');
     
     const startTime = Date.now();
+    
+    // Executar apenas a lógica de cálculo
     const results = await executarLogicaFinalCorreta();
+    
     const endTime = Date.now();
     const processingTime = (endTime - startTime) / 1000;
     
-    console.log(`🔥 Lógica final correta executada em ${processingTime}s`);
+    console.log(`🚨 Lógica emergencial executada em ${processingTime}s`);
     
     res.json({
       success: true,
-      message: 'LÓGICA FINAL CORRETA executada com sucesso',
+      message: 'LÓGICA EMERGENCIAL executada - Preços e melhor_preco calculados',
       tempo_processamento: processingTime + 's',
       resultados: results,
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
-    console.error('❌ Erro na lógica final correta:', error);
+    console.error('❌ Erro na lógica emergencial:', error);
     res.status(500).json({
-      error: 'Erro na LÓGICA FINAL CORRETA',
+      error: 'Erro na LÓGICA EMERGENCIAL',
       details: error.message,
       timestamp: new Date().toISOString()
     });
