@@ -634,8 +634,8 @@ async function syncWithBubble(csvData, gorduraValor) {
       erros: []
     };
     
-    // 3. PREPARAR OPERAÇÕES - LÓGICA SIMPLIFICADA
-    console.log('\n📝 Preparando operações - apenas códigos válidos...');
+    // 3. PREPARAR OPERAÇÕES - LÓGICA SIMPLIFICADA COM ANTI-DUPLICAÇÃO
+    console.log('\n📝 Preparando operações - apenas códigos válidos COM ANTI-DUPLICAÇÃO...');
     const operacoesFornecedores = [];
     const operacoesProdutos = [];
     const operacoesRelacoes = [];
@@ -643,6 +643,9 @@ async function syncWithBubble(csvData, gorduraValor) {
     // Sets para evitar duplicatas nas operações
     const fornecedoresParaCriar = new Set();
     const produtosProcessados = new Set();
+    
+    // *** NOVO: MAP PARA EVITAR DUPLICATAS DE RELAÇÕES ***
+    const relacoesProcessadas = new Map(); // chave: "codigo-loja", valor: dados da relação
     
     // Coletar todos os códigos cotados por fornecedor para lógica de cotação diária
     const codigosCotadosPorFornecedor = new Map();
@@ -666,6 +669,14 @@ async function syncWithBubble(csvData, gorduraValor) {
       for (const produtoCsv of lojaData.produtos) {
         const codigo = produtoCsv.codigo;
         const modelo = produtoCsv.modelo;
+        
+        // *** VALIDAÇÃO ANTI-DUPLICAÇÃO DE RELAÇÕES ***
+        const chaveRelacao = `${codigo}-${lojaData.loja}`;
+        
+        if (relacoesProcessadas.has(chaveRelacao)) {
+          console.log(`⚠️ RELAÇÃO DUPLICADA DETECTADA E IGNORADA: ${codigo} - ${lojaData.loja}`);
+          continue; // PULAR esta iteração para evitar duplicata
+        }
         
         // Adicionar aos códigos cotados
         codigosCotados.add(codigo);
@@ -713,7 +724,17 @@ async function syncWithBubble(csvData, gorduraValor) {
         const precoFinal = precoOriginal === 0 ? 0 : precoOriginal + gorduraValor;
         const precoOrdenacao = precoOriginal === 0 ? 999999 : precoOriginal;
         
-        // Preparar operação de relação (SEMPRE, para produtos existentes ou novos)
+        // *** REGISTRAR RELAÇÃO NO MAP ANTI-DUPLICAÇÃO ***
+        relacoesProcessadas.set(chaveRelacao, {
+          codigo: codigo,
+          loja: lojaData.loja,
+          modelo: modelo,
+          precoOriginal,
+          precoFinal,
+          precoOrdenacao
+        });
+        
+        // Preparar operação de relação (APENAS UMA VEZ POR CÓDIGO-LOJA)
         operacoesRelacoes.push({
           tipo: 'processar',
           loja: lojaData.loja,
@@ -723,10 +744,15 @@ async function syncWithBubble(csvData, gorduraValor) {
           precoFinal,
           precoOrdenacao
         });
+        
+        console.log(`🔗 RELAÇÃO PREPARADA: ${codigo} - ${lojaData.loja} (preço: ${precoOriginal})`);
       }
       
       codigosCotadosPorFornecedor.set(lojaData.loja, codigosCotados);
     }
+    
+    console.log(`🚫 TOTAL DE RELAÇÕES DUPLICADAS EVITADAS: ${csvData.reduce((total, loja) => total + loja.produtos.length, 0) - operacoesRelacoes.length}`);
+    console.log(`✅ RELAÇÕES ÚNICAS PREPARADAS: ${operacoesRelacoes.length}`);
     
     console.log(`📋 Operações preparadas:`);
     console.log(`   Fornecedores para criar: ${operacoesFornecedores.length}`);
@@ -784,8 +810,8 @@ async function syncWithBubble(csvData, gorduraValor) {
       results.erros.push(...produtoErrors);
     }
     
-    // 4.3 Processar relações em lotes - SIMPLIFICADO
-    console.log('\n🔗 Processando relações...');
+    // 4.3 Processar relações em lotes - COM VALIDAÇÃO RIGOROSA ANTI-DUPLICAÇÃO
+    console.log('\n🔗 Processando relações COM VALIDAÇÃO ANTI-DUPLICAÇÃO...');
     const { results: relacaoResults, errors: relacaoErrors } = await processBatch(
       operacoesRelacoes,
       async (operacao) => {
@@ -801,7 +827,12 @@ async function syncWithBubble(csvData, gorduraValor) {
         const chaveRelacao = `${produto._id}-${fornecedor._id}`;
         const relacaoExistente = relacaoMap.get(chaveRelacao);
         
+        console.log(`🔍 Verificando relação: ${operacao.codigo} - ${operacao.loja} (chave: ${chaveRelacao})`);
+        
         if (!relacaoExistente) {
+          // *** CRIAR NOVA RELAÇÃO ***
+          console.log(`➕ CRIANDO nova relação: ${operacao.codigo} - ${operacao.loja}`);
+          
           const novaRelacao = await createInBubble('1 - ProdutoFornecedor _25marco', {
             produto: produto._id,
             fornecedor: fornecedor._id,
@@ -811,17 +842,44 @@ async function syncWithBubble(csvData, gorduraValor) {
             preco_ordenacao: operacao.precoOrdenacao,
             melhor_preco: false
           });
+          
+          // *** ATUALIZAR MAPA LOCAL PARA EVITAR DUPLICATAS FUTURAS ***
+          relacaoMap.set(chaveRelacao, {
+            _id: novaRelacao.id,
+            produto: produto._id,
+            fornecedor: fornecedor._id,
+            preco_original: operacao.precoOriginal,
+            preco_final: operacao.precoFinal,
+            preco_ordenacao: operacao.precoOrdenacao
+          });
+          
           return { tipo: 'criada', resultado: novaRelacao };
+          
         } else if (relacaoExistente.preco_original !== operacao.precoOriginal) {
+          // *** ATUALIZAR RELAÇÃO EXISTENTE ***
+          console.log(`🔄 ATUALIZANDO relação existente: ${operacao.codigo} - ${operacao.loja} (${relacaoExistente.preco_original} → ${operacao.precoOriginal})`);
+          
           const relacaoAtualizada = await updateInBubble('1 - ProdutoFornecedor _25marco', relacaoExistente._id, {
             preco_original: operacao.precoOriginal,
             preco_final: operacao.precoFinal,
             preco_ordenacao: operacao.precoOrdenacao
           });
+          
+          // *** ATUALIZAR MAPA LOCAL ***
+          relacaoMap.set(chaveRelacao, {
+            ...relacaoExistente,
+            preco_original: operacao.precoOriginal,
+            preco_final: operacao.precoFinal,
+            preco_ordenacao: operacao.precoOrdenacao
+          });
+          
           return { tipo: 'atualizada', resultado: relacaoAtualizada };
+          
+        } else {
+          // *** RELAÇÃO INALTERADA ***
+          console.log(`⚪ RELAÇÃO INALTERADA: ${operacao.codigo} - ${operacao.loja} (preço: ${operacao.precoOriginal})`);
+          return { tipo: 'inalterada' };
         }
-        
-        return { tipo: 'inalterada' };
       }
     );
     
@@ -873,8 +931,10 @@ async function syncWithBubble(csvData, gorduraValor) {
       results.erros.push(...zeramentoErrors);
     }
     
-    console.log('\n✅ Sincronização simplificada concluída!');
+    console.log('\n✅ Sincronização COM ANTI-DUPLICAÇÃO concluída!');
     console.log('📊 Resultados da sincronização:', results);
+    console.log(`🚫 Duplicatas evitadas: Sistema implementado com validação rigorosa`);
+    console.log(`🔑 Chave de unicidade: produto_id + fornecedor_id`);
     
     // === EXECUTAR A LÓGICA FINAL CORRETA ===
     console.log('\n🔥 EXECUTANDO LÓGICA FINAL CORRETA - ÚLTIMA COISA DO CÓDIGO!');
