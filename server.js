@@ -1716,4 +1716,4 @@ app.listen(PORT, () => {
   console.log(`   ✅ Logs detalhados de cada decisão`);
 });
 
-module.exports = app;
+module.exports = app; 
