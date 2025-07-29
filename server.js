@@ -25,13 +25,13 @@ const BUBBLE_CONFIG = {
 
 // Configurações de processamento para alto volume
 const PROCESSING_CONFIG = {
-  BATCH_SIZE: 50,
-  MAX_CONCURRENT: 5,
-  RETRY_ATTEMPTS: 3,
-  RETRY_DELAY: 1000,
-  REQUEST_TIMEOUT: 60000,
-  BATCH_DELAY: 100,
-  MEMORY_CLEANUP_INTERVAL: 1000
+  BATCH_SIZE: 50,           // Tamanho do lote para processamento
+  MAX_CONCURRENT: 5,        // Máximo de operações simultâneas
+  RETRY_ATTEMPTS: 3,        // Tentativas de retry
+  RETRY_DELAY: 1000,        // Delay entre tentativas (ms)
+  REQUEST_TIMEOUT: 60000,   // Timeout por requisição (60s)
+  BATCH_DELAY: 100,         // Delay entre lotes (ms)
+  MEMORY_CLEANUP_INTERVAL: 1000 // Interval para limpeza de memória
 };
 
 // Configuração do multer para upload de arquivos
@@ -51,7 +51,7 @@ const storage = multer.diskStorage({
 const upload = multer({ 
   storage: storage,
   limits: {
-    fileSize: 100 * 1024 * 1024 // 100MB max
+    fileSize: 100 * 1024 * 1024 // 100MB max para arquivos grandes
   },
   fileFilter: (req, file, cb) => {
     if (file.mimetype === 'text/csv' || file.originalname.endsWith('.csv')) {
@@ -62,13 +62,16 @@ const upload = multer({
   }
 });
 
-// Função para verificar se código é válido
+// FUNÇÃO: Verificar se código é válido (MANTIDA)
 function isCodigoValido(codigo) {
   if (!codigo || codigo.toString().trim() === '' || codigo.toString().trim().toUpperCase() === 'SEM CÓDIGO') {
     return false;
   }
   return true;
 }
+
+// FUNÇÃO REMOVIDA: gerarIdentificadorProduto (não é mais necessária)
+// Agora usamos apenas códigos válidos como identificadores
 
 // Função para extrair preço numérico
 function extractPrice(priceString) {
@@ -108,12 +111,12 @@ function parseCSVLine(line) {
   return result;
 }
 
-// Função de delay
+// Função de delay para evitar sobrecarga
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Função de retry
+// Função de retry para operações críticas
 async function retryOperation(operation, maxAttempts = PROCESSING_CONFIG.RETRY_ATTEMPTS) {
   let lastError;
   
@@ -134,15 +137,15 @@ async function retryOperation(operation, maxAttempts = PROCESSING_CONFIG.RETRY_A
   throw lastError;
 }
 
-// Função para buscar TODOS os dados de uma tabela com offset
+// Função para buscar dados do Bubble com correção do loop infinito
 async function fetchAllFromBubble(tableName, filters = {}) {
   try {
-    console.log(`🔍 Buscando TODOS os dados de ${tableName}...`);
+    console.log(`🔍 Buscando dados de ${tableName}...`);
     let allData = [];
     let cursor = 0;
     let hasMore = true;
     let totalFetched = 0;
-    let maxIterations = 1000;
+    let maxIterations = 1000; // Proteção contra loop infinito
     let currentIteration = 0;
     
     while (hasMore && currentIteration < maxIterations) {
@@ -166,14 +169,16 @@ async function fetchAllFromBubble(tableName, filters = {}) {
       
       const newResults = data.response.results;
       
+      // Se não há novos resultados, sair do loop
       if (!newResults || newResults.length === 0) {
-        console.log(`📊 ${tableName}: Nenhum novo resultado, finalizando busca`);
+        console.log(`📊 ${tableName}: Nenhum novo resultado encontrado, finalizando busca`);
         break;
       }
       
       allData = allData.concat(newResults);
       totalFetched += newResults.length;
       
+      // Verificar se há mais dados usando múltiplas condições
       const remaining = data.response.remaining || 0;
       const newCursor = data.response.cursor;
       
@@ -183,23 +188,25 @@ async function fetchAllFromBubble(tableName, filters = {}) {
         cursor = newCursor;
       }
       
-      console.log(`📊 ${tableName}: ${totalFetched} registros carregados (restam: ${remaining})`);
+      console.log(`📊 ${tableName}: ${totalFetched} registros carregados (restam: ${remaining}, cursor: ${cursor})`);
       
+      // Pequeno delay para evitar rate limiting
       if (hasMore) {
         await delay(50);
       }
       
+      // Proteção adicional: se o cursor não mudou, sair do loop
       if (newCursor === cursor && remaining > 0) {
-        console.warn(`⚠️ ${tableName}: Cursor não mudou, possível loop. Finalizando busca.`);
+        console.warn(`⚠️ ${tableName}: Cursor não mudou, possível loop infinito detectado. Finalizando busca.`);
         break;
       }
     }
     
     if (currentIteration >= maxIterations) {
-      console.warn(`⚠️ ${tableName}: Atingido limite máximo de iterações (${maxIterations}).`);
+      console.warn(`⚠️ ${tableName}: Atingido limite máximo de iterações (${maxIterations}). Possível loop infinito.`);
     }
     
-    console.log(`✅ ${tableName}: ${allData.length} registros carregados total`);
+    console.log(`✅ ${tableName}: ${allData.length} registros carregados (total em ${currentIteration} iterações)`);
     return allData;
     
   } catch (error) {
@@ -208,7 +215,7 @@ async function fetchAllFromBubble(tableName, filters = {}) {
   }
 }
 
-// Função para criar item no Bubble
+// Função para criar item no Bubble com retry
 async function createInBubble(tableName, data) {
   return await retryOperation(async () => {
     const response = await axios.post(`${BUBBLE_CONFIG.baseURL}/${tableName}`, data, {
@@ -219,7 +226,7 @@ async function createInBubble(tableName, data) {
   });
 }
 
-// Função para atualizar item no Bubble
+// Função para atualizar item no Bubble com retry
 async function updateInBubble(tableName, itemId, data) {
   return await retryOperation(async () => {
     const response = await axios.patch(`${BUBBLE_CONFIG.baseURL}/${tableName}/${itemId}`, data, {
@@ -230,11 +237,209 @@ async function updateInBubble(tableName, itemId, data) {
   });
 }
 
-// PASSO 1: Processar CSV e montar JSON completo
+// FUNÇÃO FINAL CORRETA - COM PROCESSAMENTO EM LOTES PARA ALTA VELOCIDADE
+async function executarLogicaFinalCorreta() {
+  console.log('\n🔥 === EXECUTANDO LÓGICA FINAL CORRETA (ÚLTIMA COISA) ===');
+  
+  try {
+    // 1. Buscar TODOS os itens da tabela "1 - ProdutoFornecedor_25marco" COM PAGINAÇÃO CORRETA
+    console.log('📊 1. Buscando TODOS os itens da tabela "1 - ProdutoFornecedor_25marco"...');
+    
+    let todosOsItens = [];
+    let cursor = 0;
+    let remaining = 1; // Iniciar com 1 para entrar no loop
+    
+    while (remaining > 0) {
+      console.log(`📊 Buscando página com cursor: ${cursor}`);
+      
+      const response = await axios.get(`${BUBBLE_CONFIG.baseURL}/1 - ProdutoFornecedor _25marco`, {
+        headers: BUBBLE_CONFIG.headers,
+        params: { cursor, limit: 100 },
+        timeout: PROCESSING_CONFIG.REQUEST_TIMEOUT
+      });
+      
+      const data = response.data;
+      
+      if (!data.response || !data.response.results) {
+        throw new Error('Resposta inválida da API');
+      }
+      
+      todosOsItens = todosOsItens.concat(data.response.results);
+      remaining = data.response.remaining || 0;
+      
+      console.log(`📊 Página carregada: ${data.response.results.length} itens (remaining: ${remaining})`);
+      
+      // INCREMENTAR CURSOR DE 100 EM 100
+      cursor += 100;
+      
+      if (remaining > 0) {
+        await delay(50); // Delay entre páginas
+      }
+    }
+    
+    console.log(`📊 Total de itens carregados: ${todosOsItens.length}`);
+    
+    // 2. Agrupar pelo campo "produto" DESDE QUE preco_final não seja 0 nem vazio
+    console.log('📊 2. Agrupando pelo campo "produto"...');
+    const grupos = {};
+    
+    todosOsItens.forEach(item => {
+      // DESDE QUE preco_final não seja 0 nem vazio
+      if (item.preco_final && item.preco_final > 0) {
+        const produtoId = item.produto; // Campo "produto" = _id da tabela produtos
+        
+        if (!grupos[produtoId]) {
+          grupos[produtoId] = [];
+        }
+        grupos[produtoId].push(item);
+      }
+    });
+    
+    const produtoIds = Object.keys(grupos);
+    console.log(`📊 Produtos agrupados: ${produtoIds.length}`);
+    
+    // 3. PREPARAR OPERAÇÕES EM LOTES PARA ALTA VELOCIDADE
+    console.log('📊 3. Preparando operações em lotes...');
+    const operacoesProdutos = [];
+    const operacoesMelhorPreco = [];
+    
+    for (const produtoId of produtoIds) {
+      const grupo = grupos[produtoId];
+      
+      // Extrair preco_final de todos os itens do grupo
+      const precosFinal = grupo.map(item => item.preco_final);
+      
+      // CALCULAR conforme especificado:
+      const qtd_fornecedores = grupo.length;
+      const menor_preco = Math.min(...precosFinal);
+      const soma = precosFinal.reduce((a, b) => a + b, 0);
+      const preco_medio = Math.round((soma / qtd_fornecedores) * 100) / 100;
+      const itemComMenorPreco = grupo.find(item => item.preco_final === menor_preco);
+      const fornecedor_menor_preco = itemComMenorPreco.fornecedor;
+      
+      // PREPARAR operação para produto
+      operacoesProdutos.push({
+        produtoId: produtoId,
+        dados: {
+          qtd_fornecedores: qtd_fornecedores,
+          menor_preco: menor_preco,
+          preco_medio: preco_medio,
+          fornecedor_menor_preco: fornecedor_menor_preco
+        },
+        debug: {
+          grupo_size: grupo.length,
+          precos: precosFinal
+        }
+      });
+      
+      // PREPARAR operações para melhor_preco
+      grupo.forEach(item => {
+        const melhor_preco = (item.preco_final === menor_preco) ? 'yes' : 'no';
+        
+        operacoesMelhorPreco.push({
+          itemId: item._id,
+          melhor_preco: melhor_preco,
+          debug: {
+            preco_item: item.preco_final,
+            menor_preco_grupo: menor_preco
+          }
+        });
+      });
+    }
+    
+    console.log(`📊 Operações preparadas:`);
+    console.log(`   Produtos para editar: ${operacoesProdutos.length}`);
+    console.log(`   Itens melhor_preco para editar: ${operacoesMelhorPreco.length}`);
+    
+    // 4. EXECUTAR OPERAÇÕES DOS PRODUTOS EM LOTES
+    console.log('\n📦 4. Editando produtos em lotes...');
+    const { results: produtoResults, errors: produtoErrors } = await processBatch(
+      operacoesProdutos,
+      async (operacao) => {
+        console.log(`📦 Editando produto ${operacao.produtoId}: qtd=${operacao.dados.qtd_fornecedores}, menor=${operacao.dados.menor_preco}, media=${operacao.dados.preco_medio}`);
+        
+        return await updateInBubble('1 - produtos_25marco', operacao.produtoId, operacao.dados);
+      }
+    );
+    
+    const produtosEditados = produtoResults.filter(r => r.success).length;
+    console.log(`✅ Produtos editados: ${produtosEditados}/${operacoesProdutos.length}`);
+    
+    // 5. EXECUTAR OPERAÇÕES DE MELHOR_PRECO EM LOTES
+    console.log('\n🏷️ 5. Editando melhor_preco em lotes...');
+    const { results: melhorPrecoResults, errors: melhorPrecoErrors } = await processBatch(
+      operacoesMelhorPreco,
+      async (operacao) => {
+        console.log(`🏷️ Item ${operacao.itemId}: melhor_preco=${operacao.melhor_preco} (${operacao.debug.preco_item} vs ${operacao.debug.menor_preco_grupo})`);
+        
+        return await updateInBubble('1 - ProdutoFornecedor _25marco', operacao.itemId, {
+          melhor_preco: operacao.melhor_preco
+        });
+      }
+    );
+    
+    const itensEditados = melhorPrecoResults.filter(r => r.success).length;
+    console.log(`✅ Itens melhor_preco editados: ${itensEditados}/${operacoesMelhorPreco.length}`);
+    
+    // 6. GARANTIR QUE ITENS INVÁLIDOS TENHAM MELHOR_PRECO = NO (EM LOTES)
+    console.log('\n🧹 6. Garantindo melhor_preco=no para preços inválidos (em lotes)...');
+    const itensInvalidos = todosOsItens.filter(item => !item.preco_final || item.preco_final <= 0);
+    
+    let itensInvalidosEditados = 0;
+    
+    if (itensInvalidos.length > 0) {
+      console.log(`🧹 Encontrados ${itensInvalidos.length} itens com preços inválidos`);
+      
+      const operacoesInvalidos = itensInvalidos.map(item => ({
+        itemId: item._id,
+        preco_invalido: item.preco_final
+      }));
+      
+      const { results: invalidosResults, errors: invalidosErrors } = await processBatch(
+        operacoesInvalidos,
+        async (operacao) => {
+          console.log(`🧹 Item ${operacao.itemId}: melhor_preco=no (preço inválido: ${operacao.preco_invalido})`);
+          
+          return await updateInBubble('1 - ProdutoFornecedor _25marco', operacao.itemId, {
+            melhor_preco: 'no'
+          });
+        }
+      );
+      
+      itensInvalidosEditados = invalidosResults.filter(r => r.success).length;
+      console.log(`✅ Itens inválidos editados: ${itensInvalidosEditados}/${itensInvalidos.length}`);
+    }
+    
+    const resultados = {
+      total_itens_carregados: todosOsItens.length,
+      produtos_agrupados: produtoIds.length,
+      produtos_editados: produtosEditados,
+      itens_editados: itensEditados,
+      itens_invalidos: itensInvalidos.length,
+      itens_invalidos_editados: itensInvalidosEditados,
+      erros: {
+        produtos: produtoErrors.length,
+        melhor_preco: melhorPrecoErrors.length
+      },
+      sucesso: true
+    };
+    
+    console.log('\n🔥 === LÓGICA FINAL CORRETA CONCLUÍDA (COM LOTES) ===');
+    console.log('📊 RESULTADOS:', resultados);
+    
+    return resultados;
+    
+  } catch (error) {
+    console.error('❌ ERRO na lógica final correta:', error);
+    throw error;
+  }
+}
+
+// Função otimizada para processar o CSV (CORRIGIDA - APENAS CÓDIGOS VÁLIDOS)
 function processCSV(filePath) {
   return new Promise((resolve, reject) => {
     try {
-      console.log('📁 PASSO 1: Lendo e processando arquivo CSV...');
+      console.log('📁 Lendo arquivo CSV...');
       
       const fileContent = fs.readFileSync(filePath, 'utf8');
       const lines = fileContent.split('\n').filter(line => line.trim());
@@ -244,9 +449,11 @@ function processCSV(filePath) {
         return resolve([]);
       }
       
+      // Pular as duas primeiras linhas (cabeçalhos)
       const dataLines = lines.slice(2);
       console.log(`📊 Processando ${dataLines.length} linhas de dados`);
       
+      // Configuração das lojas com índices das colunas
       const lojasConfig = [
         { nome: 'Loja da Suzy', indices: [0, 1, 2] },
         { nome: 'Loja Top Celulares', indices: [4, 5, 6] },
@@ -264,422 +471,423 @@ function processCSV(filePath) {
         console.log(`🏪 Processando ${lojaConfig.nome}...`);
         const produtos = [];
         let produtosSemCodigo = 0;
+        let produtosComCodigo = 0;
         
-        dataLines.forEach((line) => {
-          if (!line || line.trim() === '') return;
+        // Processar em chunks para economizar memória
+        const chunkSize = 1000;
+        for (let i = 0; i < dataLines.length; i += chunkSize) {
+          const chunk = dataLines.slice(i, i + chunkSize);
           
-          const columns = parseCSVLine(line);
-          if (columns.length < 31) return;
-          
-          const codigo = columns[lojaConfig.indices[0]];
-          const modelo = columns[lojaConfig.indices[1]];
-          const preco = columns[lojaConfig.indices[2]];
-          
-          // APENAS PRODUTOS COM CÓDIGO VÁLIDO
-          if (isCodigoValido(codigo) && modelo && preco && 
-              modelo.trim() !== '' && preco.trim() !== '') {
+          chunk.forEach((line) => {
+            if (!line || line.trim() === '') return;
             
-            const precoNumerico = extractPrice(preco);
+            const columns = parseCSVLine(line);
             
-            produtos.push({
-              codigo: codigo.trim(),
-              modelo: modelo.trim(),
-              preco: precoNumerico,
-              tipo_identificador: 'codigo',
-              id_planilha: codigo.trim(),
-              nome_completo: modelo.trim()
-            });
-          } else if (modelo && preco && modelo.trim() !== '' && preco.trim() !== '') {
-            produtosSemCodigo++;
+            if (columns.length < 31) return;
+            
+            const codigo = columns[lojaConfig.indices[0]];
+            const modelo = columns[lojaConfig.indices[1]];
+            const preco = columns[lojaConfig.indices[2]];
+            
+            // *** NOVA LÓGICA: PROCESSAR APENAS SE TEM CÓDIGO VÁLIDO ***
+            if (isCodigoValido(codigo) && modelo && preco && 
+                modelo.trim() !== '' && 
+                preco.trim() !== '') {
+              
+              const precoNumerico = extractPrice(preco);
+              
+              produtos.push({
+                codigo: codigo.trim(),
+                modelo: modelo.trim(),
+                preco: precoNumerico,
+                identificador: codigo.trim(), // Sempre o código como identificador
+                tipo_identificador: 'codigo', // Sempre código
+                id_planilha: codigo.trim(),
+                nome_completo: modelo.trim()
+              });
+              
+              produtosComCodigo++;
+            } else {
+              // Contador para produtos ignorados (sem código)
+              if (modelo && preco && modelo.trim() !== '' && preco.trim() !== '') {
+                produtosSemCodigo++;
+              }
+            }
+          });
+          
+          // Forçar garbage collection a cada chunk
+          if (global.gc && i % (chunkSize * 5) === 0) {
+            global.gc();
           }
-        });
+        }
         
-        console.log(`✅ ${lojaConfig.nome}: ${produtos.length} produtos (${produtosSemCodigo} ignorados sem código)`);
+        console.log(`✅ ${lojaConfig.nome}: ${produtos.length} produtos processados (${produtosSemCodigo} ignorados por não ter código)`);
         
         if (produtos.length > 0) {
           processedData.push({
             loja: lojaConfig.nome,
             total_produtos: produtos.length,
-            produtos_com_codigo: produtos.length,
-            produtos_sem_codigo: produtosSemCodigo,
+            produtos_com_codigo: produtosComCodigo,
+            produtos_sem_codigo: produtosSemCodigo, // Apenas para estatística
             produtos: produtos
           });
         }
       });
       
-      console.log('✅ PASSO 1 CONCLUÍDO: JSON do CSV montado');
       resolve(processedData);
       
     } catch (error) {
-      console.error('❌ Erro no PASSO 1:', error);
+      console.error('❌ Erro no processamento do CSV:', error);
       reject(error);
     }
   });
 }
 
-// NOVA LÓGICA PRINCIPAL - ANTI-DUPLICAÇÃO CORRETA
-async function syncWithBubbleNovologica(csvData, gorduraValor) {
-  try {
-    console.log('\n🔥 INICIANDO NOVA LÓGICA ANTI-DUPLICAÇÃO CORRETA');
+// Função para processar lotes com controle de concorrência
+async function processBatch(items, processorFunction, batchSize = PROCESSING_CONFIG.BATCH_SIZE) {
+  const results = [];
+  const errors = [];
+  
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    console.log(`📦 Processando lote ${Math.floor(i/batchSize) + 1}/${Math.ceil(items.length/batchSize)} (${batch.length} itens)`);
     
-    // PASSO 2: Buscar TODOS os fornecedores (SEM OFFSET - conforme solicitado)
-    console.log('\n📊 PASSO 2: Buscando TODOS os fornecedores...');
-    const todosFornecedores = await fetchAllFromBubble('1 - fornecedor_25marco');
-    console.log(`✅ ${todosFornecedores.length} fornecedores carregados`);
-    
-    // Criar mapa de fornecedores
-    const fornecedorMap = new Map();
-    todosFornecedores.forEach(f => {
-      fornecedorMap.set(f.nome_fornecedor, {
-        _id: f._id,
-        nome_fornecedor: f.nome_fornecedor
-      });
+    // Processar lote com controle de concorrência
+    const promises = batch.map(async (item, index) => {
+      try {
+        const result = await processorFunction(item, i + index);
+        return { success: true, result, index: i + index };
+      } catch (error) {
+        console.error(`❌ Erro no item ${i + index}:`, error.message);
+        errors.push({ index: i + index, error: error.message, item });
+        return { success: false, error: error.message, index: i + index };
+      }
     });
     
-    // PASSO 3: Buscar TODOS os produtos
-    console.log('\n📊 PASSO 3: Buscando TODOS os produtos...');
-    const todosProdutos = await fetchAllFromBubble('1 - produtos_25marco');
-    console.log(`✅ ${todosProdutos.length} produtos carregados`);
-    
-    // PASSO 4: Separar itens para EDITAR e CRIAR
-    console.log('\n📝 PASSO 4: Separando itens para EDITAR e CRIAR...');
-    
-    const itensEditar = [];
-    const itensCriar = [];
-    
-    for (const lojaData of csvData) {
-      const nomeLoja = lojaData.loja;
-      const fornecedorInfo = fornecedorMap.get(nomeLoja);
-      
-      if (!fornecedorInfo) {
-        console.log(`⚠️ Fornecedor não encontrado: ${nomeLoja} - criando...`);
-        // Criar fornecedor se não existir
-        const novoFornecedor = await createInBubble('1 - fornecedor_25marco', {
-          nome_fornecedor: nomeLoja
-        });
-        fornecedorMap.set(nomeLoja, {
-          _id: novoFornecedor.id,
-          nome_fornecedor: nomeLoja
-        });
-      }
-      
-      const fornecedorFinal = fornecedorMap.get(nomeLoja);
-      const produtosParaEditar = [];
-      const produtosParaCriar = [];
-      
-      for (const produtoCsv of lojaData.produtos) {
-        const idPlanilha = produtoCsv.id_planilha;
-        
-        // BUSCAR PRODUTO QUE TENHA MESMO ID_PLANILHA 
-        // *** ATENÇÃO: AQUI ESTÁ A CORREÇÃO CRÍTICA ***
-        // Não buscamos apenas por id_planilha, mas por id_planilha + fornecedor
-        // para evitar duplicação na tabela de ligação
-        
-        const produtoExistente = todosProdutos.find(p => p.id_planilha === idPlanilha);
-        
-        if (produtoExistente) {
-          // PRODUTO EXISTE - vai para EDITAR
-          produtosParaEditar.push({
-            ...produtoCsv,
-            unique_produto: produtoExistente._id
-          });
-          console.log(`✏️  EDITAR: ${idPlanilha} (${nomeLoja})`);
-        } else {
-          // PRODUTO NÃO EXISTE - vai para CRIAR
-          produtosParaCriar.push({
-            ...produtoCsv
-            // unique_produto não existe pois será criado
-          });
-          console.log(`➕ CRIAR: ${idPlanilha} (${nomeLoja})`);
-        }
-      }
-      
-      if (produtosParaEditar.length > 0) {
-        itensEditar.push({
-          loja: nomeLoja,
-          unique_fornecedor: fornecedorFinal._id,
-          produtos: produtosParaEditar
-        });
-      }
-      
-      if (produtosParaCriar.length > 0) {
-        itensCriar.push({
-          loja: nomeLoja,
-          unique_fornecedor: fornecedorFinal._id,
-          produtos: produtosParaCriar
-        });
-      }
+    // Limitar concorrência
+    const concurrentPromises = [];
+    for (let j = 0; j < promises.length; j += PROCESSING_CONFIG.MAX_CONCURRENT) {
+      const concurrentBatch = promises.slice(j, j + PROCESSING_CONFIG.MAX_CONCURRENT);
+      concurrentPromises.push(Promise.all(concurrentBatch));
     }
     
-    console.log(`📋 Separação concluída:`);
-    console.log(`   Lojas com itens para EDITAR: ${itensEditar.length}`);
-    console.log(`   Lojas com itens para CRIAR: ${itensCriar.length}`);
+    const batchResults = await Promise.all(concurrentPromises);
+    results.push(...batchResults.flat());
     
-    // PASSO 5: Buscar TODAS as relações produto-fornecedor
-    console.log('\n🔗 PASSO 5: Buscando TODAS as relações produto-fornecedor...');
-    const todasRelacoes = await fetchAllFromBubble('1 - ProdutoFornecedor _25marco');
-    console.log(`✅ ${todasRelacoes.length} relações carregadas`);
-    
-    // PASSO 6: PROCESSAR ITENS PARA EDITAR
-    console.log('\n✏️  PASSO 6: Processando itens para EDITAR...');
-    let itensEditados = 0;
-    
-    for (const itemEditar of itensEditar) {
-      const uniqueFornecedor = itemEditar.unique_fornecedor;
-      
-      for (const produto of itemEditar.produtos) {
-        const uniqueProduto = produto.unique_produto;
-        
-        // ENCONTRAR A RELAÇÃO EXISTENTE (MATCH EXATO: produto + fornecedor)
-        const relacaoExistente = todasRelacoes.find(r => 
-          r.produto === uniqueProduto && r.fornecedor === uniqueFornecedor
-        );
-        
-        if (relacaoExistente) {
-          // CALCULAR NOVOS PREÇOS
-          const precoOriginal = produto.preco;
-          const precoFinal = precoOriginal === 0 ? 0 : precoOriginal + gorduraValor;
-          const precoOrdenacao = precoOriginal === 0 ? 999999 : precoOriginal;
-          
-          // ATUALIZAR RELAÇÃO
-          await updateInBubble('1 - ProdutoFornecedor _25marco', relacaoExistente._id, {
-            preco_original: precoOriginal,
-            preco_final: precoFinal,
-            preco_ordenacao: precoOrdenacao,
-            nome_produto: produto.nome_completo
-          });
-          
-          itensEditados++;
-          console.log(`✏️  Editado: ${produto.id_planilha} (${itemEditar.loja}) - Preço: ${precoFinal}`);
-        } else {
-          console.warn(`⚠️ Relação não encontrada para edição: ${produto.id_planilha} + ${itemEditar.loja}`);
-        }
-      }
+    // Delay entre lotes para evitar sobrecarga
+    if (i + batchSize < items.length) {
+      await delay(PROCESSING_CONFIG.BATCH_DELAY);
     }
     
-    // PASSO 7: PROCESSAR ITENS PARA CRIAR
-    console.log('\n➕ PASSO 7: Processando itens para CRIAR...');
-    let produtosCriados = 0;
-    let relacoesCriadas = 0;
-    
-    for (const itemCriar of itensCriar) {
-      const uniqueFornecedor = itemCriar.unique_fornecedor;
-      
-      for (const produto of itemCriar.produtos) {
-        // CRIAR PRODUTO PRIMEIRO
-        const novoProduto = await createInBubble('1 - produtos_25marco', {
-          id_planilha: produto.id_planilha,
-          nome_completo: produto.nome_completo,
-          preco_medio: 0,
-          qtd_fornecedores: 0,
-          menor_preco: 0
-        });
-        
-        produtosCriados++;
-        console.log(`➕ Produto criado: ${produto.id_planilha}`);
-        
-        // *** VERIFICAÇÃO CRÍTICA ANTI-DUPLICAÇÃO ***
-        // Antes de criar a relação, verificar se já existe
-        const relacaoJaExiste = todasRelacoes.find(r => 
-          r.produto === novoProduto.id && r.fornecedor === uniqueFornecedor
-        );
-        
-        if (!relacaoJaExiste) {
-          // CALCULAR PREÇOS
-          const precoOriginal = produto.preco;
-          const precoFinal = precoOriginal === 0 ? 0 : precoOriginal + gorduraValor;
-          const precoOrdenacao = precoOriginal === 0 ? 999999 : precoOriginal;
-          
-          // CRIAR RELAÇÃO
-          const novaRelacao = await createInBubble('1 - ProdutoFornecedor _25marco', {
-            produto: novoProduto.id,
-            fornecedor: uniqueFornecedor,
-            nome_produto: produto.nome_completo,
-            preco_original: precoOriginal,
-            preco_final: precoFinal,
-            preco_ordenacao: precoOrdenacao,
-            melhor_preco: 'no'
-          });
-          
-          // ADICIONAR À LISTA LOCAL PARA EVITAR DUPLICAÇÕES FUTURAS NESTE LOTE
-          todasRelacoes.push({
-            _id: novaRelacao.id,
-            produto: novoProduto.id,
-            fornecedor: uniqueFornecedor,
-            preco_original: precoOriginal,
-            preco_final: precoFinal,
-            preco_ordenacao: precoOrdenacao,
-            melhor_preco: 'no'
-          });
-          
-          relacoesCriadas++;
-          console.log(`🔗 Relação criada: ${produto.id_planilha} + ${itemCriar.loja} - Preço: ${precoFinal}`);
-        } else {
-          console.warn(`⚠️ DUPLICAÇÃO EVITADA: Relação ${produto.id_planilha} + ${itemCriar.loja} já existe!`);
-        }
-      }
+    // Limpeza de memória periódica
+    if (global.gc && (i + batchSize) % PROCESSING_CONFIG.MEMORY_CLEANUP_INTERVAL === 0) {
+      global.gc();
     }
-    
-    // PASSO 8: EXECUTAR LÓGICA FINAL DE RECÁLCULO
-    console.log('\n🔥 PASSO 8: Executando lógica final de recálculo...');
-    const logicaFinalResults = await executarLogicaFinalCorreta();
-    
-    const results = {
-      produtos_criados: produtosCriados,
-      relacoes_criadas: relacoesCriadas,
-      itens_editados: itensEditados,
-      fornecedores_processados: fornecedorMap.size,
-      logica_final_correta: logicaFinalResults,
-      sucesso: true
-    };
-    
-    console.log('\n🎯 NOVA LÓGICA ANTI-DUPLICAÇÃO CONCLUÍDA COM SUCESSO!');
-    console.log('📊 Resultados:', results);
-    
-    return results;
-    
-  } catch (error) {
-    console.error('❌ Erro na nova lógica:', error);
-    throw error;
   }
+  
+  return { results, errors };
 }
 
-// LÓGICA FINAL DE RECÁLCULO (mantida igual)
-async function executarLogicaFinalCorreta() {
-  console.log('\n🔥 === EXECUTANDO LÓGICA FINAL CORRETA ===');
-  
+// Função principal para sincronizar com o Bubble - SIMPLIFICADA (APENAS CÓDIGOS)
+async function syncWithBubble(csvData, gorduraValor) {
   try {
-    let todosOsItens = [];
-    let cursor = 0;
-    let remaining = 1;
+    console.log('\n🔄 Iniciando sincronização - APENAS produtos com código...');
     
-    while (remaining > 0) {
-      const response = await axios.get(`${BUBBLE_CONFIG.baseURL}/1 - ProdutoFornecedor _25marco`, {
-        headers: BUBBLE_CONFIG.headers,
-        params: { cursor, limit: 100 },
-        timeout: PROCESSING_CONFIG.REQUEST_TIMEOUT
-      });
-      
-      const data = response.data;
-      
-      if (!data.response || !data.response.results) {
-        throw new Error('Resposta inválida da API');
-      }
-      
-      todosOsItens = todosOsItens.concat(data.response.results);
-      remaining = data.response.remaining || 0;
-      cursor += 100;
-      
-      if (remaining > 0) {
-        await delay(50);
-      }
-    }
+    // 1. CARREGAR DADOS EXISTENTES
+    console.log('📊 Carregando dados existentes...');
+    const [fornecedores, produtos, produtoFornecedores] = await Promise.all([
+      fetchAllFromBubble('1 - fornecedor_25marco'),
+      fetchAllFromBubble('1 - produtos_25marco'),
+      fetchAllFromBubble('1 - ProdutoFornecedor _25marco')
+    ]);
     
-    console.log(`📊 Total de relações carregadas: ${todosOsItens.length}`);
+    console.log(`📊 Carregados: ${fornecedores.length} fornecedores, ${produtos.length} produtos, ${produtoFornecedores.length} relações`);
     
-    // Agrupar por produto
-    const grupos = {};
-    todosOsItens.forEach(item => {
-      if (item.preco_final && item.preco_final > 0) {
-        const produtoId = item.produto;
-        if (!grupos[produtoId]) {
-          grupos[produtoId] = [];
-        }
-        grupos[produtoId].push(item);
+    // 2. CRIAR MAPAS OTIMIZADOS - APENAS POR CÓDIGO
+    const fornecedorMap = new Map();
+    fornecedores.forEach(f => fornecedorMap.set(f.nome_fornecedor, f));
+    
+    // MAPA SIMPLIFICADO: Apenas por código (id_planilha)
+    const produtoMapPorCodigo = new Map();
+    produtos.forEach(p => {
+      // Apenas produtos que têm código válido
+      if (p.id_planilha && p.id_planilha.trim() !== '') {
+        produtoMapPorCodigo.set(p.id_planilha, p);
       }
     });
     
-    const produtoIds = Object.keys(grupos);
-    console.log(`📊 Produtos agrupados: ${produtoIds.length}`);
+    const relacaoMap = new Map();
+    produtoFornecedores.forEach(pf => {
+      relacaoMap.set(`${pf.produto}-${pf.fornecedor}`, pf);
+    });
     
-    // Preparar operações
-    const operacoesProdutos = [];
-    const operacoesMelhorPreco = [];
+    console.log(`📊 Mapas criados: ${produtoMapPorCodigo.size} produtos por código`);
     
-    for (const produtoId of produtoIds) {
-      const grupo = grupos[produtoId];
-      const precosFinal = grupo.map(item => item.preco_final);
-      
-      const qtd_fornecedores = grupo.length;
-      const menor_preco = Math.min(...precosFinal);
-      const soma = precosFinal.reduce((a, b) => a + b, 0);
-      const preco_medio = Math.round((soma / qtd_fornecedores) * 100) / 100;
-      const itemComMenorPreco = grupo.find(item => item.preco_final === menor_preco);
-      const fornecedor_menor_preco = itemComMenorPreco.fornecedor;
-      
-      operacoesProdutos.push({
-        produtoId: produtoId,
-        dados: {
-          qtd_fornecedores: qtd_fornecedores,
-          menor_preco: menor_preco,
-          preco_medio: preco_medio,
-          fornecedor_menor_preco: fornecedor_menor_preco
-        }
-      });
-      
-      grupo.forEach(item => {
-        const melhor_preco = (item.preco_final === menor_preco) ? 'yes' : 'no';
-        operacoesMelhorPreco.push({
-          itemId: item._id,
-          melhor_preco: melhor_preco
-        });
-      });
-    }
-    
-    // Executar operações de produtos
-    let produtosEditados = 0;
-    for (const operacao of operacoesProdutos) {
-      try {
-        await updateInBubble('1 - produtos_25marco', operacao.produtoId, operacao.dados);
-        produtosEditados++;
-      } catch (error) {
-        console.error(`❌ Erro ao editar produto ${operacao.produtoId}:`, error.message);
-      }
-    }
-    
-    // Executar operações de melhor preço
-    let itensEditados = 0;
-    for (const operacao of operacoesMelhorPreco) {
-      try {
-        await updateInBubble('1 - ProdutoFornecedor _25marco', operacao.itemId, {
-          melhor_preco: operacao.melhor_preco
-        });
-        itensEditados++;
-      } catch (error) {
-        console.error(`❌ Erro ao editar item ${operacao.itemId}:`, error.message);
-      }
-    }
-    
-    // Zerar itens inválidos
-    const itensInvalidos = todosOsItens.filter(item => !item.preco_final || item.preco_final <= 0);
-    let itensInvalidosEditados = 0;
-    
-    for (const item of itensInvalidos) {
-      try {
-        await updateInBubble('1 - ProdutoFornecedor _25marco', item._id, {
-          melhor_preco: 'no'
-        });
-        itensInvalidosEditados++;
-      } catch (error) {
-        console.error(`❌ Erro ao zerar item ${item._id}:`, error.message);
-      }
-    }
-    
-    const resultados = {
-      total_itens_carregados: todosOsItens.length,
-      produtos_agrupados: produtoIds.length,
-      produtos_editados: produtosEditados,
-      itens_editados: itensEditados,
-      itens_invalidos: itensInvalidos.length,
-      itens_invalidos_editados: itensInvalidosEditados,
-      sucesso: true
+    const results = {
+      fornecedores_criados: 0,
+      produtos_criados: 0,
+      produtos_atualizados: 0,
+      relacoes_criadas: 0,
+      relacoes_atualizadas: 0,
+      relacoes_zeradas: 0,
+      produtos_ignorados_sem_codigo: 0,
+      erros: []
     };
     
-    console.log('✅ LÓGICA FINAL CORRETA CONCLUÍDA');
-    return resultados;
+    // 3. PREPARAR OPERAÇÕES - LÓGICA SIMPLIFICADA
+    console.log('\n📝 Preparando operações - apenas códigos válidos...');
+    const operacoesFornecedores = [];
+    const operacoesProdutos = [];
+    const operacoesRelacoes = [];
+    
+    // Sets para evitar duplicatas nas operações
+    const fornecedoresParaCriar = new Set();
+    const produtosProcessados = new Set();
+    
+    // Coletar todos os códigos cotados por fornecedor para lógica de cotação diária
+    const codigosCotadosPorFornecedor = new Map();
+    
+    for (const lojaData of csvData) {
+      const codigosCotados = new Set();
+      
+      // 3.1 Verificar fornecedor
+      if (!fornecedorMap.has(lojaData.loja) && !fornecedoresParaCriar.has(lojaData.loja)) {
+        fornecedoresParaCriar.add(lojaData.loja);
+        operacoesFornecedores.push({
+          tipo: 'criar',
+          nome: lojaData.loja,
+          dados: {
+            nome_fornecedor: lojaData.loja
+          }
+        });
+      }
+      
+      // 3.2 Processar produtos da loja - APENAS CÓDIGOS VÁLIDOS
+      for (const produtoCsv of lojaData.produtos) {
+        const codigo = produtoCsv.codigo;
+        const modelo = produtoCsv.modelo;
+        
+        // Adicionar aos códigos cotados
+        codigosCotados.add(codigo);
+        
+        // BUSCA SIMPLIFICADA: apenas por código
+        const produtoExistente = produtoMapPorCodigo.get(codigo);
+        
+        if (produtoExistente) {
+          // PRODUTO JÁ EXISTE - NÃO CRIAR DUPLICATA!
+          console.log(`✅ PRODUTO ENCONTRADO POR CÓDIGO - NÃO CRIANDO: ${codigo}`);
+        } else {
+          // PRODUTO NÃO EXISTE - PODE CRIAR
+          if (!produtosProcessados.has(codigo)) {
+            produtosProcessados.add(codigo);
+            
+            console.log(`➕ PRODUTO NOVO PARA CRIAR: ${codigo}`);
+            
+            operacoesProdutos.push({
+              tipo: 'criar',
+              identificador: codigo,
+              dados: {
+                id_planilha: codigo,
+                nome_completo: modelo,
+                preco_medio: 0,
+                qtd_fornecedores: 0,
+                menor_preco: 0
+              }
+            });
+            
+            // Atualizar mapa local para evitar duplicatas
+            const produtoTemp = {
+              _id: 'temp_' + codigo,
+              id_planilha: codigo,
+              nome_completo: modelo
+            };
+            
+            produtoMapPorCodigo.set(codigo, produtoTemp);
+          } else {
+            console.log(`⚠️ PRODUTO JÁ PROCESSADO NESTE LOTE: ${codigo}`);
+          }
+        }
+        
+        // Calcular preços para TODAS as relações (produtos existentes ou novos)
+        const precoOriginal = produtoCsv.preco;
+        const precoFinal = precoOriginal === 0 ? 0 : precoOriginal + gorduraValor;
+        const precoOrdenacao = precoOriginal === 0 ? 999999 : precoOriginal;
+        
+        // Preparar operação de relação (SEMPRE, para produtos existentes ou novos)
+        operacoesRelacoes.push({
+          tipo: 'processar',
+          loja: lojaData.loja,
+          codigo: codigo,
+          modelo: modelo,
+          precoOriginal,
+          precoFinal,
+          precoOrdenacao
+        });
+      }
+      
+      codigosCotadosPorFornecedor.set(lojaData.loja, codigosCotados);
+    }
+    
+    console.log(`📋 Operações preparadas:`);
+    console.log(`   Fornecedores para criar: ${operacoesFornecedores.length}`);
+    console.log(`   Produtos para criar: ${operacoesProdutos.length}`);
+    console.log(`   Relações para processar: ${operacoesRelacoes.length}`);
+    
+    // 4. EXECUTAR OPERAÇÕES EM LOTES
+    
+    // 4.1 Criar fornecedores em lotes
+    if (operacoesFornecedores.length > 0) {
+      console.log('\n👥 Criando fornecedores...');
+      
+      const { results: fornecedorResults, errors: fornecedorErrors } = await processBatch(
+        operacoesFornecedores,
+        async (operacao) => {
+          if (fornecedorMap.has(operacao.nome)) {
+            return { skipped: true, nome: operacao.nome };
+          }
+          
+          const novoFornecedor = await createInBubble('1 - fornecedor_25marco', operacao.dados);
+          fornecedorMap.set(operacao.dados.nome_fornecedor, {
+            _id: novoFornecedor.id,
+            nome_fornecedor: operacao.dados.nome_fornecedor
+          });
+          return novoFornecedor;
+        }
+      );
+      results.fornecedores_criados = fornecedorResults.filter(r => r.success && !r.result?.skipped).length;
+      results.erros.push(...fornecedorErrors);
+    }
+    
+    // 4.2 Criar produtos novos em lotes
+    if (operacoesProdutos.length > 0) {
+      console.log('\n📦 Criando produtos novos...');
+      
+      const { results: produtoResults, errors: produtoErrors } = await processBatch(
+        operacoesProdutos,
+        async (operacao) => {
+          const novoProduto = await createInBubble('1 - produtos_25marco', operacao.dados);
+          
+          // Atualizar mapa local com o produto criado
+          const produtoCompleto = {
+            _id: novoProduto.id,
+            id_planilha: operacao.dados.id_planilha,
+            nome_completo: operacao.dados.nome_completo
+          };
+          
+          produtoMapPorCodigo.set(operacao.identificador, produtoCompleto);
+          
+          console.log(`➕ Produto criado: ${operacao.identificador}`);
+          return novoProduto;
+        }
+      );
+      results.produtos_criados = produtoResults.filter(r => r.success).length;
+      results.erros.push(...produtoErrors);
+    }
+    
+    // 4.3 Processar relações em lotes - SIMPLIFICADO
+    console.log('\n🔗 Processando relações...');
+    const { results: relacaoResults, errors: relacaoErrors } = await processBatch(
+      operacoesRelacoes,
+      async (operacao) => {
+        const fornecedor = fornecedorMap.get(operacao.loja);
+        
+        // Buscar produto APENAS por código
+        const produto = produtoMapPorCodigo.get(operacao.codigo);
+        
+        if (!fornecedor || !produto) {
+          throw new Error(`Fornecedor ou produto não encontrado: ${operacao.loja} - ${operacao.codigo}`);
+        }
+        
+        const chaveRelacao = `${produto._id}-${fornecedor._id}`;
+        const relacaoExistente = relacaoMap.get(chaveRelacao);
+        
+        if (!relacaoExistente) {
+          const novaRelacao = await createInBubble('1 - ProdutoFornecedor _25marco', {
+            produto: produto._id,
+            fornecedor: fornecedor._id,
+            nome_produto: operacao.modelo,
+            preco_original: operacao.precoOriginal,
+            preco_final: operacao.precoFinal,
+            preco_ordenacao: operacao.precoOrdenacao,
+            melhor_preco: false
+          });
+          return { tipo: 'criada', resultado: novaRelacao };
+        } else if (relacaoExistente.preco_original !== operacao.precoOriginal) {
+          const relacaoAtualizada = await updateInBubble('1 - ProdutoFornecedor _25marco', relacaoExistente._id, {
+            preco_original: operacao.precoOriginal,
+            preco_final: operacao.precoFinal,
+            preco_ordenacao: operacao.precoOrdenacao
+          });
+          return { tipo: 'atualizada', resultado: relacaoAtualizada };
+        }
+        
+        return { tipo: 'inalterada' };
+      }
+    );
+    
+    results.relacoes_criadas = relacaoResults.filter(r => r.success && r.result?.tipo === 'criada').length;
+    results.relacoes_atualizadas = relacaoResults.filter(r => r.success && r.result?.tipo === 'atualizada').length;
+    results.erros.push(...relacaoErrors);
+    
+    // 4.4 APLICAR LÓGICA DE COTAÇÃO DIÁRIA - SIMPLIFICADA
+    console.log('\n🧹 Aplicando lógica de cotação diária...');
+    const operacoesZeramento = [];
+    
+    for (const [lojaName, codigosCotadosHoje] of codigosCotadosPorFornecedor) {
+      const fornecedor = fornecedorMap.get(lojaName);
+      if (!fornecedor) continue;
+      
+      const relacoesExistentes = produtoFornecedores.filter(pf => pf.fornecedor === fornecedor._id);
+      
+      for (const relacao of relacoesExistentes) {
+        const produto = produtos.find(p => p._id === relacao.produto);
+        if (!produto) continue;
+        
+        // Verificar se foi cotado hoje APENAS por código
+        const foiCotadoHoje = produto.id_planilha && codigosCotadosHoje.has(produto.id_planilha);
+        const temPreco = relacao.preco_original > 0;
+        
+        if (!foiCotadoHoje && temPreco) {
+          operacoesZeramento.push({
+            relacaoId: relacao._id,
+            codigo: produto.id_planilha,
+            loja: lojaName
+          });
+        }
+      }
+    }
+    
+    if (operacoesZeramento.length > 0) {
+      console.log(`🧹 Zerando ${operacoesZeramento.length} produtos não cotados...`);
+      const { results: zeramentoResults, errors: zeramentoErrors } = await processBatch(
+        operacoesZeramento,
+        async (operacao) => {
+          return await updateInBubble('1 - ProdutoFornecedor _25marco', operacao.relacaoId, {
+            preco_original: 0,
+            preco_final: 0,
+            preco_ordenacao: 999999
+          });
+        }
+      );
+      results.relacoes_zeradas = zeramentoResults.filter(r => r.success).length;
+      results.erros.push(...zeramentoErrors);
+    }
+    
+    console.log('\n✅ Sincronização simplificada concluída!');
+    console.log('📊 Resultados da sincronização:', results);
+    
+    // === EXECUTAR A LÓGICA FINAL CORRETA ===
+    console.log('\n🔥 EXECUTANDO LÓGICA FINAL CORRETA - ÚLTIMA COISA DO CÓDIGO!');
+    const logicaFinalResults = await executarLogicaFinalCorreta();
+    console.log('🔥 Lógica final correta concluída:', logicaFinalResults);
+    
+    return {
+      ...results,
+      logica_final_correta: logicaFinalResults
+    };
     
   } catch (error) {
-    console.error('❌ ERRO na lógica final correta:', error);
+    console.error('❌ Erro na sincronização:', error);
     throw error;
   }
 }
@@ -689,12 +897,16 @@ async function executarLogicaFinalCorreta() {
 // Rota principal para upload e processamento
 app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
   try {
-    console.log('\n🚀 === NOVA REQUISIÇÃO COM LÓGICA ANTI-DUPLICAÇÃO ===');
+    console.log('\n🚀 === NOVA REQUISIÇÃO ===');
+    console.log('📤 Arquivo:', req.file ? req.file.originalname : 'Nenhum');
     
     if (!req.file) {
-      return res.status(400).json({ error: 'Nenhum arquivo CSV foi enviado' });
+      return res.status(400).json({ 
+        error: 'Nenhum arquivo CSV foi enviado' 
+      });
     }
     
+    // Validar parâmetro gordura_valor
     const gorduraValor = parseFloat(req.body.gordura_valor);
     if (isNaN(gorduraValor)) {
       return res.status(400).json({
@@ -708,28 +920,33 @@ app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
     const filePath = req.file.path;
     
     if (!fs.existsSync(filePath)) {
-      return res.status(400).json({ error: 'Arquivo não encontrado' });
+      return res.status(400).json({ 
+        error: 'Arquivo não encontrado' 
+      });
     }
     
+    // Processar o CSV
+    console.log('⏱️ Iniciando processamento - APENAS produtos com código...');
     const startTime = Date.now();
     
-    // PROCESSAR CSV
     const csvData = await processCSV(filePath);
     
-    // NOVA LÓGICA ANTI-DUPLICAÇÃO
-    const syncResults = await syncWithBubbleNovologica(csvData, gorduraValor);
+    // Sincronizar com Bubble
+    const syncResults = await syncWithBubble(csvData, gorduraValor);
     
     const endTime = Date.now();
     const processingTime = (endTime - startTime) / 1000;
     
     // Limpar arquivo temporário
     fs.unlinkSync(filePath);
+    console.log('🗑️ Arquivo temporário removido');
     
     console.log(`✅ Processamento concluído em ${processingTime}s`);
     
+    // Retornar resultado
     res.json({
       success: true,
-      message: 'CSV processado com NOVA LÓGICA ANTI-DUPLICAÇÃO',
+      message: 'CSV processado - APENAS produtos com código válido',
       gordura_valor: gorduraValor,
       tempo_processamento: processingTime + 's',
       tamanho_arquivo: (req.file.size / 1024 / 1024).toFixed(2) + ' MB',
@@ -743,17 +960,12 @@ app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
       estatisticas_processamento: {
         total_lojas_processadas: csvData.length,
         total_produtos_csv: csvData.reduce((acc, loja) => acc + loja.total_produtos, 0),
+        total_produtos_com_codigo: csvData.reduce((acc, loja) => acc + loja.produtos_com_codigo, 0),
+        total_produtos_sem_codigo: csvData.reduce((acc, loja) => acc + loja.produtos_sem_codigo, 0),
         produtos_criados: syncResults.produtos_criados,
-        relacoes_criadas: syncResults.relacoes_criadas,
-        itens_editados: syncResults.itens_editados,
-        fornecedores_processados: syncResults.fornecedores_processados
-      },
-      observacoes: [
-        'NOVA LÓGICA implementada para evitar duplicação na tabela de ligação',
-        'GARANTIDO que não existe mais de 1 relação com mesmo produto+fornecedor',
-        'PRODUTOS sem código válido são completamente ignorados',
-        'VERIFICAÇÃO dupla anti-duplicação implementada'
-      ]
+        produtos_atualizados: syncResults.produtos_atualizados,
+        erros_encontrados: syncResults.erros.length
+      }
     });
     
   } catch (error) {
@@ -771,37 +983,36 @@ app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
   }
 });
 
-// Rota para executar apenas a lógica final de recálculo
+// Rota para EXECUTAR LÓGICA FINAL CORRETA
 app.post('/force-recalculate', async (req, res) => {
   try {
-    console.log('\n🔥 === EXECUTANDO APENAS LÓGICA FINAL DE RECÁLCULO ===');
+    console.log('\n🔥 === EXECUTANDO LÓGICA FINAL CORRETA MANUALMENTE ===');
     
     const startTime = Date.now();
     const results = await executarLogicaFinalCorreta();
     const endTime = Date.now();
     const processingTime = (endTime - startTime) / 1000;
     
-    console.log(`🔥 Lógica final executada em ${processingTime}s`);
+    console.log(`🔥 Lógica final correta executada em ${processingTime}s`);
     
     res.json({
       success: true,
-      message: 'LÓGICA FINAL DE RECÁLCULO executada com sucesso',
+      message: 'LÓGICA FINAL CORRETA executada com sucesso',
       tempo_processamento: processingTime + 's',
       resultados: results,
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
-    console.error('❌ Erro na lógica final:', error);
+    console.error('❌ Erro na lógica final correta:', error);
     res.status(500).json({
-      error: 'Erro na LÓGICA FINAL DE RECÁLCULO',
+      error: 'Erro na LÓGICA FINAL CORRETA',
       details: error.message,
       timestamp: new Date().toISOString()
     });
   }
 });
 
-// Rota para estatísticas
 app.get('/stats', async (req, res) => {
   try {
     const [fornecedores, produtos, produtoFornecedores] = await Promise.all([
@@ -810,25 +1021,9 @@ app.get('/stats', async (req, res) => {
       fetchAllFromBubble('1 - ProdutoFornecedor _25marco')
     ]);
     
+    // Estatísticas para produtos COM código (únicos processados agora)
     const produtosComCodigo = produtos.filter(p => p.id_planilha && p.id_planilha.trim() !== '').length;
     const produtosSemCodigo = produtos.filter(p => !p.id_planilha || p.id_planilha.trim() === '').length;
-    
-    // VERIFICAÇÃO ANTI-DUPLICAÇÃO
-    const relacoesUnicas = new Set();
-    const relacoesDuplicadas = [];
-    
-    produtoFornecedores.forEach(relacao => {
-      const chave = `${relacao.produto}-${relacao.fornecedor}`;
-      if (relacoesUnicas.has(chave)) {
-        relacoesDuplicadas.push({
-          produto: relacao.produto,
-          fornecedor: relacao.fornecedor,
-          _id: relacao._id
-        });
-      } else {
-        relacoesUnicas.add(chave);
-      }
-    });
     
     res.json({
       total_fornecedores: fornecedores.length,
@@ -836,15 +1031,11 @@ app.get('/stats', async (req, res) => {
       produtos_com_codigo: produtosComCodigo,
       produtos_sem_codigo: produtosSemCodigo,
       total_relacoes: produtoFornecedores.length,
-      relacoes_unicas: relacoesUnicas.size,
-      relacoes_duplicadas: relacoesDuplicadas.length,
-      duplicacoes_encontradas: relacoesDuplicadas.length > 0 ? relacoesDuplicadas : 'Nenhuma duplicação encontrada! ✅',
-      status_duplicacao: relacoesDuplicadas.length === 0 ? 'LIMPO - Sem duplicações ✅' : `PROBLEMA - ${relacoesDuplicadas.length} duplicações encontradas ❌`,
       fornecedores_ativos: fornecedores.filter(f => f.status_ativo === 'yes').length,
       produtos_com_preco: produtos.filter(p => p.menor_preco > 0).length,
       relacoes_ativas: produtoFornecedores.filter(pf => pf.status_ativo === 'yes').length,
       relacoes_com_preco: produtoFornecedores.filter(pf => pf.preco_final > 0).length,
-      observacao: 'Nova lógica implementada para evitar duplicações na tabela de ligação',
+      observacao: 'Apenas produtos com código válido são processados',
       timestamp: new Date().toISOString()
     });
     
@@ -856,12 +1047,13 @@ app.get('/stats', async (req, res) => {
   }
 });
 
-// Rota para buscar produto por código
+// Rota para buscar produto específico - SIMPLIFICADA (APENAS POR CÓDIGO)
 app.get('/produto/:codigo', async (req, res) => {
   try {
     const codigo = req.params.codigo;
     console.log(`🔍 Buscando produto por código: ${codigo}`);
     
+    // Buscar TODOS os produtos e filtrar localmente APENAS por código
     const todosProdutos = await fetchAllFromBubble('1 - produtos_25marco');
     const produto = todosProdutos.find(p => p.id_planilha === codigo);
     
@@ -872,12 +1064,20 @@ app.get('/produto/:codigo', async (req, res) => {
       });
     }
     
+    console.log(`📦 Produto encontrado:`, produto);
+    
+    // Buscar TODAS as relações e filtrar localmente
     const todasRelacoes = await fetchAllFromBubble('1 - ProdutoFornecedor _25marco');
     const relacoes = todasRelacoes.filter(r => r.produto === produto._id);
     
+    console.log(`🔗 Relações encontradas: ${relacoes.length}`);
+    
+    // Buscar TODOS os fornecedores e filtrar localmente
     const todosFornecedores = await fetchAllFromBubble('1 - fornecedor_25marco');
     const fornecedorMap = new Map();
     todosFornecedores.forEach(f => fornecedorMap.set(f._id, f));
+    
+    console.log(`👥 Fornecedores carregados: ${fornecedorMap.size}`);
     
     const relacoesDetalhadas = relacoes.map(r => {
       const fornecedor = fornecedorMap.get(r.fornecedor);
@@ -886,29 +1086,11 @@ app.get('/produto/:codigo', async (req, res) => {
         preco_original: r.preco_original,
         preco_final: r.preco_final,
         melhor_preco: r.melhor_preco,
-        preco_ordenacao: r.preco_ordenacao,
-        relacao_id: r._id
+        preco_ordenacao: r.preco_ordenacao
       };
     });
     
-    // VERIFICAR DUPLICAÇÕES PARA ESTE PRODUTO
-    const fornecedoresUnicos = new Set();
-    const duplicacoesEncontradas = [];
-    
-    relacoes.forEach(relacao => {
-      const fornecedorId = relacao.fornecedor;
-      if (fornecedoresUnicos.has(fornecedorId)) {
-        const fornecedor = fornecedorMap.get(fornecedorId);
-        duplicacoesEncontradas.push({
-          fornecedor_nome: fornecedor?.nome_fornecedor || 'Desconhecido',
-          fornecedor_id: fornecedorId,
-          relacao_id: relacao._id
-        });
-      } else {
-        fornecedoresUnicos.add(fornecedorId);
-      }
-    });
-    
+    // Recalcular estatísticas em tempo real para debugging
     const relacoesAtivas = relacoes.filter(r => r.preco_final > 0);
     const precosValidos = relacoesAtivas.map(r => r.preco_final);
     const statsCalculadas = {
@@ -918,6 +1100,8 @@ app.get('/produto/:codigo', async (req, res) => {
         Math.round((precosValidos.reduce((a, b) => a + b, 0) / precosValidos.length) * 100) / 100 : 0
     };
     
+    console.log(`📊 Stats calculadas em tempo real:`, statsCalculadas);
+    
     res.json({
       produto: {
         codigo: produto.id_planilha,
@@ -925,21 +1109,20 @@ app.get('/produto/:codigo', async (req, res) => {
         preco_menor: produto.menor_preco,
         preco_medio: produto.preco_medio,
         qtd_fornecedores: produto.qtd_fornecedores,
-        produto_id: produto._id
+        tipo_identificador: 'codigo'
+      },
+      busca_realizada: {
+        codigo_buscado: codigo,
+        tipo_busca: 'codigo',
+        encontrado_por: 'id_planilha'
       },
       stats_calculadas_tempo_real: statsCalculadas,
       relacoes: relacoesDetalhadas.sort((a, b) => a.preco_final - b.preco_final),
-      verificacao_duplicacao: {
-        total_relacoes: relacoes.length,
-        fornecedores_unicos: fornecedoresUnicos.size,
-        duplicacoes_encontradas: duplicacoesEncontradas.length,
-        detalhes_duplicacao: duplicacoesEncontradas.length > 0 ? duplicacoesEncontradas : 'Nenhuma duplicação ✅',
-        status: duplicacoesEncontradas.length === 0 ? 'LIMPO ✅' : `PROBLEMA - ${duplicacoesEncontradas.length} duplicações ❌`
-      },
       debug: {
         total_relacoes: relacoes.length,
         relacoes_com_preco: relacoesAtivas.length,
-        precos_validos: precosValidos
+        precos_validos: precosValidos,
+        fornecedores_encontrados: fornecedorMap.size
       },
       timestamp: new Date().toISOString()
     });
@@ -953,121 +1136,26 @@ app.get('/produto/:codigo', async (req, res) => {
   }
 });
 
-// Rota para detectar e listar todas as duplicações
-app.get('/debug/duplicacoes', async (req, res) => {
-  try {
-    console.log('🔍 Analisando duplicações na tabela de ligação...');
-    
-    const [produtos, fornecedores, produtoFornecedores] = await Promise.all([
-      fetchAllFromBubble('1 - produtos_25marco'),
-      fetchAllFromBubble('1 - fornecedor_25marco'), 
-      fetchAllFromBubble('1 - ProdutoFornecedor _25marco')
-    ]);
-    
-    // Criar mapas para resolução de nomes
-    const produtoMap = new Map();
-    produtos.forEach(p => produtoMap.set(p._id, p));
-    
-    const fornecedorMap = new Map();
-    fornecedores.forEach(f => fornecedorMap.set(f._id, f));
-    
-    // Detectar duplicações
-    const relacoesAgrupadas = new Map();
-    const duplicacoesEncontradas = [];
-    
-    produtoFornecedores.forEach(relacao => {
-      const chave = `${relacao.produto}-${relacao.fornecedor}`;
-      
-      if (relacoesAgrupadas.has(chave)) {
-        // DUPLICAÇÃO ENCONTRADA!
-        const produto = produtoMap.get(relacao.produto);
-        const fornecedor = fornecedorMap.get(relacao.fornecedor);
-        
-        duplicacoesEncontradas.push({
-          produto_codigo: produto?.id_planilha || 'Código não encontrado',
-          produto_nome: produto?.nome_completo || 'Nome não encontrado',
-          fornecedor_nome: fornecedor?.nome_fornecedor || 'Fornecedor não encontrado',
-          relacao_duplicada_id: relacao._id,
-          relacao_original_id: relacoesAgrupadas.get(chave)._id,
-          preco_duplicado: relacao.preco_final,
-          preco_original: relacoesAgrupadas.get(chave).preco_final
-        });
-      } else {
-        relacoesAgrupadas.set(chave, relacao);
-      }
-    });
-    
-    // Agrupar duplicações por produto
-    const duplicacoesPorProduto = new Map();
-    duplicacoesEncontradas.forEach(dup => {
-      const codigo = dup.produto_codigo;
-      if (!duplicacoesPorProduto.has(codigo)) {
-        duplicacoesPorProduto.set(codigo, []);
-      }
-      duplicacoesPorProduto.get(codigo).push(dup);
-    });
-    
-    res.json({
-      total_relacoes: produtoFornecedores.length,
-      relacoes_unicas_esperadas: relacoesAgrupadas.size,
-      duplicacoes_encontradas: duplicacoesEncontradas.length,
-      status_geral: duplicacoesEncontradas.length === 0 ? 'LIMPO - Sem duplicações ✅' : `PROBLEMA - ${duplicacoesEncontradas.length} duplicações encontradas ❌`,
-      produtos_com_duplicacao: duplicacoesPorProduto.size,
-      detalhes_duplicacoes: Array.from(duplicacoesPorProduto.entries()).map(([codigo, dups]) => ({
-        produto_codigo: codigo,
-        total_duplicacoes: dups.length,
-        duplicacoes: dups
-      })),
-      resumo_duplicacoes: duplicacoesEncontradas.slice(0, 10), // Primeiras 10 para não sobrecarregar
-      observacoes: [
-        'Esta análise mostra todas as duplicações na tabela de ligação',
-        'Cada produto deve ter APENAS 1 relação por fornecedor',  
-        'Se há duplicações, a nova lógica deve ser aplicada',
-        'Use POST /process-csv com a nova lógica para corrigir'
-      ],
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    res.status(500).json({
-      error: 'Erro ao analisar duplicações',
-      details: error.message
-    });
-  }
-});
-
-// Rota para saúde da aplicação
+// Rota para teste de saúde
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
-    message: 'API funcionando com NOVA LÓGICA ANTI-DUPLICAÇÃO',
-    version: '6.0.0-anti-duplicacao-correta',
-    correcoes_implementadas: [
-      '🚫 ELIMINADA duplicação na tabela de ligação',
-      '🔍 VERIFICAÇÃO dupla antes de criar relações',
-      '📋 SEPARAÇÃO correta entre itens para EDITAR e CRIAR',
-      '🎯 MATCH exato por produto+fornecedor',
-      '✅ GARANTIA de 1 relação única por produto+fornecedor',
-      '📊 ESTATÍSTICAS com detecção de duplicação'
+    message: 'API funcionando corretamente',
+    version: '5.0.0-apenas-codigo-valido',
+    alteracoes_versao: [
+      'APENAS produtos com código válido são processados',
+      'IGNORADOS produtos sem código ou com código inválido',
+      'REMOVIDA lógica de busca por nome_completo',
+      'REMOVIDA lógica de evolução de produtos',
+      'SIMPLIFICADA lógica de sincronização',
+      'MANTIDAS todas as outras funcionalidades'
     ],
-    logica_nova: {
-      'passo_1': 'Processar CSV e montar JSON completo',
-      'passo_2': 'Buscar TODOS os fornecedores',
-      'passo_3': 'Buscar TODOS os produtos', 
-      'passo_4': 'Separar itens para EDITAR vs CRIAR',
-      'passo_5': 'Buscar TODAS as relações existentes',
-      'passo_6': 'EDITAR relações existentes (match produto+fornecedor)',
-      'passo_7': 'CRIAR produtos novos + relações (com verificação anti-duplicação)',
-      'passo_8': 'Executar lógica final de recálculo'
+    logica_simplificada: {
+      'processamento': 'Apenas produtos com isCodigoValido(codigo) === true',
+      'busca': 'Apenas por id_planilha (código)',
+      'criacao': 'Apenas se código não existe no banco',
+      'atualizacao': 'Apenas preços de produtos existentes por código'
     },
-    garantias: [
-      '✅ NUNCA cria relação duplicada (produto+fornecedor)',
-      '✅ SEMPRE verifica se relação já existe antes de criar',
-      '✅ PRODUTOS sem código são ignorados',
-      '✅ MATCH exato entre CSV e banco de dados',
-      '✅ SEPARAÇÃO correta entre edição e criação',
-      '✅ ESTATÍSTICAS com detecção de problemas'
-    ],
     configuracoes: {
       batch_size: PROCESSING_CONFIG.BATCH_SIZE,
       max_concurrent: PROCESSING_CONFIG.MAX_CONCURRENT,
@@ -1078,7 +1166,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Rota para testar conectividade
+// Rota para testar conectividade com Bubble
 app.get('/test-bubble', async (req, res) => {
   try {
     console.log('🧪 Testando conectividade com Bubble...');
@@ -1119,7 +1207,7 @@ app.get('/test-bubble', async (req, res) => {
   }
 });
 
-// Rota para performance
+// Rota para monitoramento de performance
 app.get('/performance', (req, res) => {
   const memoryUsage = process.memoryUsage();
   const cpuUsage = process.cpuUsage();
@@ -1137,52 +1225,104 @@ app.get('/performance', (req, res) => {
     },
     uptime: Math.floor(process.uptime()) + ' segundos',
     configuracoes_otimizacao: PROCESSING_CONFIG,
-    observacao: 'Nova lógica anti-duplicação implementada',
+    observacao: 'Apenas produtos com código válido são processados',
     timestamp: new Date().toISOString()
   });
 });
 
-// Rota de documentação principal
+// Rota para debug de produtos - ATUALIZADA
+app.get('/debug/produtos-por-tipo', async (req, res) => {
+  try {
+    console.log('🔍 Analisando produtos por tipo de código...');
+    
+    const todosProdutos = await fetchAllFromBubble('1 - produtos_25marco');
+    
+    const produtosSemCodigo = todosProdutos.filter(p => 
+      !p.id_planilha || p.id_planilha.trim() === '' || p.id_planilha.trim().toUpperCase() === 'SEM CÓDIGO'
+    );
+    
+    const produtosComCodigo = todosProdutos.filter(p => 
+      p.id_planilha && p.id_planilha.trim() !== '' && p.id_planilha.trim().toUpperCase() !== 'SEM CÓDIGO'
+    );
+    
+    res.json({
+      total_produtos: todosProdutos.length,
+      produtos_com_codigo: produtosComCodigo.length,
+      produtos_sem_codigo: produtosSemCodigo.length,
+      porcentagem_com_codigo: ((produtosComCodigo.length / todosProdutos.length) * 100).toFixed(2) + '%',
+      porcentagem_sem_codigo: ((produtosSemCodigo.length / todosProdutos.length) * 100).toFixed(2) + '%',
+      observacao: 'Apenas produtos com código válido são processados na nova versão',
+      amostra_produtos_com_codigo: produtosComCodigo.slice(0, 5).map(p => ({
+        _id: p._id,
+        id_planilha: p.id_planilha,
+        nome_completo: p.nome_completo,
+        qtd_fornecedores: p.qtd_fornecedores,
+        menor_preco: p.menor_preco
+      })),
+      amostra_produtos_sem_codigo: produtosSemCodigo.slice(0, 5).map(p => ({
+        _id: p._id,
+        id_planilha: p.id_planilha || '(vazio)',
+        nome_completo: p.nome_completo,
+        qtd_fornecedores: p.qtd_fornecedores,
+        menor_preco: p.menor_preco,
+        status: 'IGNORADO na nova versão'
+      })),
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      error: 'Erro ao analisar produtos',
+      details: error.message
+    });
+  }
+});
+
+// Rota de documentação atualizada
 app.get('/', (req, res) => {
   res.json({
-    message: 'API COM NOVA LÓGICA ANTI-DUPLICAÇÃO CORRETA',
-    version: '6.0.0-anti-duplicacao-correta',
-    problema_resolvido: 'DUPLICAÇÃO na tabela de ligação 1 - ProdutoFornecedor_25marco',
-    solucao_implementada: [
-      '🎯 MATCH exato por produto+fornecedor antes de qualquer operação',
-      '🔍 VERIFICAÇÃO se relação já existe antes de criar nova',
-      '📋 SEPARAÇÃO correta entre itens para EDITAR vs CRIAR',
-      '🚫 IMPOSSÍVEL criar relação duplicada (produto+fornecedor)',
-      '✅ GARANTIA de unicidade na tabela de ligação'
+    message: 'API SIMPLIFICADA - Processamento APENAS de produtos com código válido',
+    version: '5.0.0-apenas-codigo-valido',
+    alteracoes_criticas: [
+      '🚫 IGNORA produtos sem código válido',
+      '🚫 IGNORA produtos com código vazio ou "SEM CÓDIGO"',
+      '🚫 REMOVIDA busca por nome_completo',
+      '🚫 REMOVIDA lógica de evolução de produtos',
+      '✅ MANTIDA lógica de processamento em lotes',
+      '✅ MANTIDA lógica final de recálculo',
+      '✅ MANTIDAS todas as outras funcionalidades'
     ],
-    logica_passo_a_passo: {
-      '1': 'Processar CSV → JSON completo (apenas códigos válidos)',
-      '2': 'Buscar TODOS fornecedores → Mapa de fornecedores', 
-      '3': 'Buscar TODOS produtos → Lista de produtos existentes',
-      '4': 'Para cada produto CSV: existe no banco? → EDITAR : CRIAR',
-      '5': 'Buscar TODAS relações → Mapa de relações existentes',
-      '6': 'EDITAR: Match produto+fornecedor → Atualizar preços',
-      '7': 'CRIAR: Criar produto + Verificar se relação existe → Criar relação',
-      '8': 'Lógica final → Recalcular estatísticas e melhor preço'
+    logica_simplificada: {
+      'validacao_codigo': 'isCodigoValido(codigo) === true',
+      'processamento': 'Apenas produtos que passam na validação',
+      'busca_produto': 'Apenas por id_planilha',
+      'criacao_produto': 'Apenas se código não existe',
+      'atualizacao_produto': 'Apenas preços via código',
+      'cotacao_diaria': 'Apenas códigos válidos são considerados'
     },
+    produtos_ignorados: [
+      'Produtos sem código',
+      'Produtos com código vazio ("")',
+      'Produtos com código "SEM CÓDIGO"',
+      'Produtos onde isCodigoValido() retorna false'
+    ],
     endpoints: {
-      'POST /process-csv': 'Processar CSV com nova lógica anti-duplicação',
-      'POST /force-recalculate': 'Executar apenas lógica final de recálculo',
-      'GET /stats': 'Estatísticas com detecção de duplicação',
-      'GET /produto/:codigo': 'Buscar produto com verificação de duplicação',
-      'GET /debug/duplicacoes': 'Detectar e listar TODAS as duplicações',
-      'GET /health': 'Status da API com nova lógica',
-      'GET /test-bubble': 'Testar conectividade',
-      'GET /performance': 'Monitorar performance'
+      'POST /process-csv': 'Processa CSV - APENAS códigos válidos',
+      'POST /force-recalculate': 'EXECUTA a lógica final de recálculo',
+      'GET /stats': 'Estatísticas das tabelas',
+      'GET /produto/:codigo': 'Busca produto APENAS por código',
+      'GET /debug/produtos-por-tipo': 'Debug de produtos com/sem código',
+      'GET /health': 'Status da API simplificada',
+      'GET /test-bubble': 'Testa conectividade com Bubble',
+      'GET /performance': 'Monitora performance do servidor'
     },
-    regra_critica: 'Na tabela 1 - ProdutoFornecedor_25marco NUNCA pode existir mais de 1 registro com mesmo PRODUTO + FORNECEDOR',
-    exemplo_correto: 'iPhone 15 pode estar em várias lojas, mas cada loja só pode ter 1 iPhone 15',
-    verificacoes_implementadas: [
-      '✅ Antes de criar relação: verificar se produto+fornecedor já existe',
-      '✅ Endpoint /debug/duplicacoes para detectar problemas',
-      '✅ Estatísticas mostram status de duplicação',
-      '✅ Busca de produto mostra duplicações encontradas',
-      '✅ Logs detalhados do processo'
+    garantias: [
+      '✅ NUNCA processa produtos sem código válido',
+      '✅ NUNCA cria duplicatas de produtos',
+      '✅ SEMPRE usa código como identificador único',
+      '✅ MANTÉM alta performance com processamento em lotes',
+      '✅ PRESERVA todas as funcionalidades de recálculo',
+      '✅ SIMPLIFICA lógica de sincronização'
     ],
     configuracoes_performance: {
       'tamanho_lote': PROCESSING_CONFIG.BATCH_SIZE + ' itens',
@@ -1194,9 +1334,9 @@ app.get('/', (req, res) => {
   });
 });
 
-// Middleware de tratamento de erros
+// Middleware de tratamento de erros otimizado
 app.use((error, req, res, next) => {
-  console.error('🚨 Erro capturado:', error);
+  console.error('🚨 Erro capturado pelo middleware:', error);
   
   if (error instanceof multer.MulterError) {
     if (error.code === 'LIMIT_FILE_SIZE') {
@@ -1220,6 +1360,7 @@ app.use((error, req, res, next) => {
     });
   }
   
+  // Erro de timeout
   if (error.code === 'ECONNABORTED') {
     return res.status(408).json({
       error: 'Timeout na requisição',
@@ -1228,6 +1369,7 @@ app.use((error, req, res, next) => {
     });
   }
   
+  // Erro de conexão
   if (error.code === 'ECONNREFUSED') {
     return res.status(503).json({
       error: 'Serviço indisponível',
@@ -1236,6 +1378,7 @@ app.use((error, req, res, next) => {
     });
   }
   
+  console.error('Erro não tratado:', error);
   res.status(500).json({ 
     error: 'Erro interno do servidor',
     codigo: 'INTERNAL_ERROR',
@@ -1243,17 +1386,18 @@ app.use((error, req, res, next) => {
   });
 });
 
-// Tratamento de shutdown gracioso
+// Graceful shutdown
 process.on('SIGTERM', () => {
-  console.log('🛑 Recebido SIGTERM, encerrando servidor...');
+  console.log('🛑 Recebido SIGTERM, encerrando servidor graciosamente...');
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
-  console.log('🛑 Recebido SIGINT, encerrando servidor...');
+  console.log('🛑 Recebido SIGINT, encerrando servidor graciosamente...');
   process.exit(0);
 });
 
+// Tratamento de exceções não capturadas
 process.on('uncaughtException', (error) => {
   console.error('🚨 Exceção não capturada:', error);
   process.exit(1);
@@ -1261,30 +1405,33 @@ process.on('uncaughtException', (error) => {
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('🚨 Promise rejection não tratada:', reason);
+  console.error('Promise:', promise);
 });
 
 // Iniciar servidor
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor NOVA LÓGICA ANTI-DUPLICAÇÃO rodando na porta ${PORT}`);
+  console.log(`🚀 Servidor SIMPLIFICADO rodando na porta ${PORT}`);
   console.log(`📊 Acesse: http://localhost:${PORT}`);
   console.log(`🔗 Integração Bubble configurada`);
-  console.log(`⚡ Versão 6.0.0-anti-duplicacao-correta`);
-  console.log(`\n🔧 NOVA LÓGICA IMPLEMENTADA:`);
-  console.log(`   🚫 ELIMINA duplicação na tabela de ligação`);
-  console.log(`   🔍 VERIFICA se relação existe antes de criar`);
-  console.log(`   📋 SEPARA corretamente itens para EDITAR vs CRIAR`);
-  console.log(`   🎯 MATCH exato por produto+fornecedor`);
-  console.log(`   ✅ GARANTE unicidade: 1 produto = 1 fornecedor = 1 relação`);
-  console.log(`\n📈 Configurações:`);
+  console.log(`⚡ Versão 5.0.0-apenas-codigo-valido`);
+  console.log(`🔧 ALTERAÇÕES CRÍTICAS IMPLEMENTADAS:`);
+  console.log(`   🚫 IGNORA produtos sem código válido`);
+  console.log(`   🚫 IGNORA produtos com código vazio ou "SEM CÓDIGO"`);
+  console.log(`   🚫 REMOVIDA busca por nome_completo`);
+  console.log(`   🚫 REMOVIDA lógica de evolução de produtos`);
+  console.log(`   ✅ MANTIDA lógica de processamento em lotes`);
+  console.log(`   ✅ MANTIDA lógica final de recálculo`);
+  console.log(`📈 Configurações de performance:`);
   console.log(`   - Lote: ${PROCESSING_CONFIG.BATCH_SIZE} itens`);
   console.log(`   - Concorrência: ${PROCESSING_CONFIG.MAX_CONCURRENT} operações`);
   console.log(`   - Retry: ${PROCESSING_CONFIG.RETRY_ATTEMPTS} tentativas`);
   console.log(`   - Timeout: ${PROCESSING_CONFIG.REQUEST_TIMEOUT}ms`);
-  console.log(`\n🎯 PROBLEMA DE DUPLICAÇÃO RESOLVIDO!`);
-  console.log(`   ✅ Regra: Cada produto pode ter APENAS 1 relação por fornecedor`);
-  console.log(`   ✅ Verificação: Dupla checagem antes de criar relações`);
-  console.log(`   ✅ Debug: Endpoint /debug/duplicacoes para monitorar`);
-  console.log(`   ✅ Stats: Detecção automática de duplicações`);
+  console.log(`   - Limite arquivo: 100MB`);
+  console.log(`\n🎯 LÓGICA SIMPLIFICADA IMPLEMENTADA!`);
+  console.log(`   ✅ Apenas produtos com código válido são processados`);
+  console.log(`   ✅ Produtos sem código são completamente ignorados`);
+  console.log(`   ✅ Busca e identificação apenas por código`);
+  console.log(`   ✅ Performance otimizada sem lógicas desnecessárias`);
 });
 
 module.exports = app;
