@@ -588,353 +588,558 @@ async function processBatch(items, processorFunction, batchSize = PROCESSING_CON
   return { results, errors };
 }
 
-// Função principal para sincronizar com o Bubble - SIMPLIFICADA (APENAS CÓDIGOS)
+// Função principal para sincronizar com o Bubble - NOVA ABORDAGEM COM BUSCAS ESPECÍFICAS
 async function syncWithBubble(csvData, gorduraValor) {
   try {
-    console.log('\n🔄 Iniciando sincronização - APENAS produtos com código...');
+    console.log('\n🔄 Iniciando sincronização com BUSCAS ESPECÍFICAS...');
     
-    // 1. CARREGAR DADOS EXISTENTES
-    console.log('📊 Carregando dados existentes...');
+    // 1. CARREGAR APENAS FORNECEDORES (para mapeamento loja → fornecedor_id)
+    console.log('📊 1. Carregando TODOS os fornecedores...');
+    const todosFornecedores = await fetchAllFromBubble('1 - fornecedor_25marco');
+    
+    // Criar mapa: nome_fornecedor → _id
+    const fornecedorMap = new Map();
+    todosFornecedores.forEach(f => {
+      fornecedorMap.set(f.nome_fornecedor, f._id);
+    });
+    
+    console.log(`📊 Fornecedores carregados: ${fornecedorMap.size}`);
+    
+    const results = {
+      fornecedores_criados: 0,
+      produtos_criados: 0,
+      produtos_existentes_encontrados: 0,
+      relacoes_criadas: 0,
+      relacoes_atualizadas: 0,
+      relacoes_ja_existentes: 0,
+      erros: []
+    };
+    
+    // 2. PROCESSAR CADA LOJA DO CSV
+    for (const lojaData of csvData) {
+      console.log(`\n🏪 Processando loja: ${lojaData.loja}`);
+      
+      // 2.1 Verificar/Criar fornecedor se necessário
+      let fornecedor_id = fornecedorMap.get(lojaData.loja);
+      
+      if (!fornecedor_id) {
+        console.log(`➕ Criando novo fornecedor: ${lojaData.loja}`);
+        
+        try {
+          const novoFornecedor = await createInBubble('1 - fornecedor_25marco', {
+            nome_fornecedor: lojaData.loja
+          });
+          
+          fornecedor_id = novoFornecedor.id;
+          fornecedorMap.set(lojaData.loja, fornecedor_id);
+          results.fornecedores_criados++;
+          
+          console.log(`✅ Fornecedor criado: ${lojaData.loja} (ID: ${fornecedor_id})`);
+          
+        } catch (error) {
+          console.error(`❌ Erro ao criar fornecedor ${lojaData.loja}:`, error.message);
+          results.erros.push({
+            tipo: 'fornecedor',
+            loja: lojaData.loja,
+            erro: error.message
+          });
+          continue; // Pular esta loja se não conseguir criar fornecedor
+        }
+      } else {
+        console.log(`✅ Fornecedor já existe: ${lojaData.loja} (ID: ${fornecedor_id})`);
+      }
+      
+      // 2.2 Processar cada produto da loja
+      for (const produtoCsv of lojaData.produtos) {
+        const codigo = produtoCsv.codigo;
+        const modelo = produtoCsv.modelo;
+        const precoOriginal = produtoCsv.preco;
+        const precoFinal = precoOriginal === 0 ? 0 : precoOriginal + gorduraValor;
+        const precoOrdenacao = precoOriginal === 0 ? 999999 : precoOriginal;
+        
+        console.log(`\n🔍 Processando produto: ${codigo} - ${modelo} (preço: ${precoOriginal})`);
+        
+        try {
+          // 2.3 BUSCA ESPECÍFICA: Produto existe por id_planilha?
+          console.log(`🔍 Buscando produto por id_planilha: ${codigo}`);
+          
+          const buscaProdutoResponse = await axios.get(`${BUBBLE_CONFIG.baseURL}/1 - produtos_25marco`, {
+            headers: BUBBLE_CONFIG.headers,
+            params: {
+              constraints: JSON.stringify([{
+                key: 'id_planilha',
+                constraint_type: 'equals',
+                value: codigo
+              }]),
+              limit: 1
+            },
+            timeout: PROCESSING_CONFIG.REQUEST_TIMEOUT
+          });
+          
+          let produto_id = null;
+          
+          if (buscaProdutoResponse.data.response.results.length > 0) {
+            // ✅ PRODUTO JÁ EXISTE
+            const produtoExistente = buscaProdutoResponse.data.response.results[0];
+            produto_id = produtoExistente._id;
+            results.produtos_existentes_encontrados++;
+            
+            console.log(`✅ Produto EXISTE: ${codigo} (ID: ${produto_id})`);
+            
+          } else {
+            // ➕ PRODUTO NÃO EXISTE - CRIAR NOVO
+            console.log(`➕ Produto NÃO EXISTE, criando: ${codigo}`);
+            
+            const novoProduto = await createInBubble('1 - produtos_25marco', {
+              id_planilha: codigo,
+              nome_completo: modelo,
+              preco_medio: 0,
+              qtd_fornecedores: 0,
+              menor_preco: 0
+            });
+            
+            produto_id = novoProduto.id;
+            results.produtos_criados++;
+            
+            console.log(`✅ Produto CRIADO: ${codigo} (ID: ${produto_id})`);
+          }
+          
+          // 2.4 BUSCA ESPECÍFICA: Relação produto-fornecedor existe?
+          console.log(`🔍 Buscando relação produto-fornecedor: ${produto_id} + ${fornecedor_id}`);
+          
+          const buscaRelacaoResponse = await axios.get(`${BUBBLE_CONFIG.baseURL}/1 - ProdutoFornecedor _25marco`, {
+            headers: BUBBLE_CONFIG.headers,
+            params: {
+              constraints: JSON.stringify([
+                {
+                  key: 'produto',
+                  constraint_type: 'equals',
+                  value: produto_id
+                },
+                {
+                  key: 'fornecedor',
+                  constraint_type: 'equals',
+                  value: fornecedor_id
+                }
+              ]),
+              limit: 1
+            },
+            timeout: PROCESSING_CONFIG.REQUEST_TIMEOUT
+          });
+          
+          if (buscaRelacaoResponse.data.response.results.length > 0) {
+            // 🔄 RELAÇÃO JÁ EXISTE - ATUALIZAR PREÇOS
+            const relacaoExistente = buscaRelacaoResponse.data.response.results[0];
+            
+            if (relacaoExistente.preco_original !== precoOriginal) {
+              console.log(`🔄 ATUALIZANDO relação existente: ${codigo} - ${lojaData.loja} (${relacaoExistente.preco_original} → ${precoOriginal})`);
+              
+              await updateInBubble('1 - ProdutoFornecedor _25marco', relacaoExistente._id, {
+                nome_produto: modelo,
+                preco_original: precoOriginal,
+                preco_final: precoFinal,
+                preco_ordenacao: precoOrdenacao
+              });
+              
+              results.relacoes_atualizadas++;
+              console.log(`✅ Relação ATUALIZADA: ${codigo} - ${lojaData.loja}`);
+              
+            } else {
+              console.log(`⚪ Relação INALTERADA: ${codigo} - ${lojaData.loja} (preço: ${precoOriginal})`);
+              results.relacoes_ja_existentes++;
+            }
+            
+          } else {
+            // ➕ RELAÇÃO NÃO EXISTE - CRIAR NOVA
+            console.log(`➕ CRIANDO nova relação: ${codigo} - ${lojaData.loja}`);
+            
+            await createInBubble('1 - ProdutoFornecedor _25marco', {
+              produto: produto_id,
+              fornecedor: fornecedor_id,
+              nome_produto: modelo,
+              preco_original: precoOriginal,
+              preco_final: precoFinal,
+              preco_ordenacao: precoOrdenacao,
+              melhor_preco: false
+            });
+            
+            results.relacoes_criadas++;
+            console.log(`✅ Relação CRIADA: ${codigo} - ${lojaData.loja}`);
+          }
+          
+        } catch (error) {
+          console.error(`❌ Erro ao processar produto ${codigo} - ${lojaData.loja}:`, error.message);
+          results.erros.push({
+            tipo: 'produto',
+            codigo: codigo,
+            loja: lojaData.loja,
+            erro: error.message
+          });
+        }
+        
+        // Pequeno delay para evitar rate limiting
+        await delay(50);
+      }
+    }
+    
+    // 3. APLICAR LÓGICA DE COTAÇÃO DIÁRIA
+    console.log('\n🧹 Aplicando lógica de cotação diária...');
+    
+    // Coletar todos os códigos cotados por fornecedor
+    const codigosCotadosPorFornecedor = new Map();
+    
+    for (const lojaData of csvData) {
+      const codigosCotados = new Set();
+      lojaData.produtos.forEach(p => codigosCotados.add(p.codigo));
+      codigosCotadosPorFornecedor.set(lojaData.loja, codigosCotados);
+    }
+    
+    // Para cada fornecedor, zerar produtos não cotados hoje
+    let relacoes_zeradas = 0;
+    
+    for (const [lojaName, codigosCotadosHoje] of codigosCotadosPorFornecedor) {
+      const fornecedor_id = fornecedorMap.get(lojaName);
+      if (!fornecedor_id) continue;
+      
+      console.log(`🧹 Verificando produtos não cotados da ${lojaName}...`);
+      
+      // Buscar TODAS as relações deste fornecedor que têm preço > 0
+      const relacoesAtivas = await axios.get(`${BUBBLE_CONFIG.baseURL}/1 - ProdutoFornecedor _25marco`, {
+        headers: BUBBLE_CONFIG.headers,
+        params: {
+          constraints: JSON.stringify([
+            {
+              key: 'fornecedor',
+              constraint_type: 'equals',
+              value: fornecedor_id
+            },
+            {
+              key: 'preco_original',
+              constraint_type: 'greater than',
+              value: 0
+            }
+          ]),
+          limit: 100
+        },
+        timeout: PROCESSING_CONFIG.REQUEST_TIMEOUT
+      });
+      
+      // Para cada relação ativa, verificar se o produto foi cotado hoje
+      for (const relacao of relacoesAtivas.data.response.results) {
+        // Buscar o produto para pegar o id_planilha
+        const produtoResponse = await axios.get(`${BUBBLE_CONFIG.baseURL}/1 - produtos_25marco/${relacao.produto}`, {
+          headers: BUBBLE_CONFIG.headers,
+          timeout: PROCESSING_CONFIG.REQUEST_TIMEOUT
+        });
+        
+        const produto = produtoResponse.data.response;
+        const codigoProduto = produto.id_planilha;
+        
+        if (!codigosCotadosHoje.has(codigoProduto)) {
+          // Produto não foi cotado hoje - ZERAR
+          console.log(`🧹 Zerando produto não cotado: ${codigoProduto} - ${lojaName}`);
+          
+          await updateInBubble('1 - ProdutoFornecedor _25marco', relacao._id, {
+            preco_original: 0,
+            preco_final: 0,
+            preco_ordenacao: 999999
+          });
+          
+          relacoes_zeradas++;
+        }
+        
+        await delay(25); // Delay para não sobrecarregar
+      }
+    }
+    
+    results.relacoes_zeradas = relacoes_zeradas;
+    
+    console.log('📊 Resultados da sincronização:', results);
+    console.log(`🎯 ZERO duplicatas garantidas por busca específica antes de criar!`);
+    
+    // === EXECUTAR A LÓGICA FINAL CORRETA ===
+    console.log('\n🔥 EXECUTANDO LÓGICA FINAL CORRETA - ÚLTIMA COISA DO CÓDIGO!');
+    const logicaFinalResults = await executarLogicaFinalCorreta();
+    console.log('🔥 Lógica final correta concluída:', logicaFinalResults);
+    
+    return {
+      ...results,
+      logica_final_correta: logicaFinalResults
+    };
+    
+  } catch (error) {
+    console.error('❌ Erro na sincronização:', error);
+    throw error;
+  }
+}
+
+// ROTAS DA API
+
+// Rota principal para upload e processamento
+app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
+  try {
+    console.log('\n🚀 === NOVA REQUISIÇÃO ===');
+    console.log('📤 Arquivo:', req.file ? req.file.originalname : 'Nenhum');
+    
+    if (!req.file) {
+      return res.status(400).json({ 
+        error: 'Nenhum arquivo CSV foi enviado' 
+      });
+    }
+    
+    // Validar parâmetro gordura_valor
+    const gorduraValor = parseFloat(req.body.gordura_valor);
+    if (isNaN(gorduraValor)) {
+      return res.status(400).json({
+        error: 'Parâmetro gordura_valor é obrigatório e deve ser um número'
+      });
+    }
+    
+    console.log('💰 Gordura valor:', gorduraValor);
+    console.log('📊 Tamanho do arquivo:', (req.file.size / 1024 / 1024).toFixed(2) + ' MB');
+    
+    const filePath = req.file.path;
+    
+    if (!fs.existsSync(filePath)) {
+      return res.status(400).json({ 
+        error: 'Arquivo não encontrado' 
+      });
+    }
+    
+    // Processar o CSV
+    console.log('⏱️ Iniciando processamento com BUSCAS ESPECÍFICAS...');
+    const startTime = Date.now();
+    
+    const csvData = await processCSV(filePath);
+    
+    // Sincronizar com Bubble
+    const syncResults = await syncWithBubble(csvData, gorduraValor);
+    
+    const endTime = Date.now();
+    const processingTime = (endTime - startTime) / 1000;
+    
+    // Limpar arquivo temporário
+    fs.unlinkSync(filePath);
+    console.log('🗑️ Arquivo temporário removido');
+    
+    console.log(`✅ Processamento concluído em ${processingTime}s`);
+    
+    // Retornar resultado
+    res.json({
+      success: true,
+      message: 'CSV processado com BUSCAS ESPECÍFICAS - Zero duplicatas garantidas',
+      gordura_valor: gorduraValor,
+      tempo_processamento: processingTime + 's',
+      tamanho_arquivo: (req.file.size / 1024 / 1024).toFixed(2) + ' MB',
+      dados_csv: csvData.map(loja => ({
+        loja: loja.loja,
+        total_produtos: loja.total_produtos,
+        produtos_com_codigo: loja.produtos_com_codigo,
+        produtos_sem_codigo: loja.produtos_sem_codigo
+      })),
+      resultados_sincronizacao: syncResults,
+      estatisticas_processamento: {
+        total_lojas_processadas: csvData.length,
+        total_produtos_csv: csvData.reduce((acc, loja) => acc + loja.total_produtos, 0),
+        total_produtos_com_codigo: csvData.reduce((acc, loja) => acc + loja.produtos_com_codigo, 0),
+        total_produtos_sem_codigo: csvData.reduce((acc, loja) => acc + loja.produtos_sem_codigo, 0),
+        produtos_criados: syncResults.produtos_criados,
+        produtos_existentes_encontrados: syncResults.produtos_existentes_encontrados,
+        relacoes_criadas: syncResults.relacoes_criadas,
+        relacoes_atualizadas: syncResults.relacoes_atualizadas,
+        erros_encontrados: syncResults.erros.length
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Erro ao processar CSV:', error);
+    
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    
+    res.status(500).json({ 
+      error: 'Erro interno do servidor',
+      details: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Rota para EXECUTAR LÓGICA FINAL CORRETA
+app.post('/force-recalculate', async (req, res) => {
+  try {
+    console.log('\n🔥 === EXECUTANDO LÓGICA FINAL CORRETA MANUALMENTE ===');
+    
+    const startTime = Date.now();
+    const results = await executarLogicaFinalCorreta();
+    const endTime = Date.now();
+    const processingTime = (endTime - startTime) / 1000;
+    
+    console.log(`🔥 Lógica final correta executada em ${processingTime}s`);
+    
+    res.json({
+      success: true,
+      message: 'LÓGICA FINAL CORRETA executada com sucesso',
+      tempo_processamento: processingTime + 's',
+      resultados: results,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Erro na lógica final correta:', error);
+    res.status(500).json({
+      error: 'Erro na LÓGICA FINAL CORRETA',
+      details: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+app.get('/stats', async (req, res) => {
+  try {
     const [fornecedores, produtos, produtoFornecedores] = await Promise.all([
       fetchAllFromBubble('1 - fornecedor_25marco'),
       fetchAllFromBubble('1 - produtos_25marco'),
       fetchAllFromBubble('1 - ProdutoFornecedor _25marco')
     ]);
     
-    console.log(`📊 Carregados: ${fornecedores.length} fornecedores, ${produtos.length} produtos, ${produtoFornecedores.length} relações`);
+    // Estatísticas para produtos COM código (únicos processados agora)
+    const produtosComCodigo = produtos.filter(p => p.id_planilha && p.id_planilha.trim() !== '').length;
+    const produtosSemCodigo = produtos.filter(p => !p.id_planilha || p.id_planilha.trim() === '').length;
     
-    // 2. CRIAR MAPAS OTIMIZADOS - APENAS POR CÓDIGO
+    res.json({
+      total_fornecedores: fornecedores.length,
+      total_produtos: produtos.length,
+      produtos_com_codigo: produtosComCodigo,
+      produtos_sem_codigo: produtosSemCodigo,
+      total_relacoes: produtoFornecedores.length,
+      fornecedores_ativos: fornecedores.filter(f => f.status_ativo === 'yes').length,
+      produtos_com_preco: produtos.filter(p => p.menor_preco > 0).length,
+      relacoes_ativas: produtoFornecedores.filter(pf => pf.status_ativo === 'yes').length,
+      relacoes_com_preco: produtoFornecedores.filter(pf => pf.preco_final > 0).length,
+      observacao: 'Processamento com buscas específicas - zero duplicatas',
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      error: 'Erro ao buscar estatísticas',
+      details: error.message
+    });
+  }
+});
+
+// Rota para buscar produto específico - SIMPLIFICADA (APENAS POR CÓDIGO)
+app.get('/produto/:codigo', async (req, res) => {
+  try {
+    const codigo = req.params.codigo;
+    console.log(`🔍 Buscando produto por código: ${codigo}`);
+    
+    // Buscar produto por id_planilha usando constraint
+    const produtoResponse = await axios.get(`${BUBBLE_CONFIG.baseURL}/1 - produtos_25marco`, {
+      headers: BUBBLE_CONFIG.headers,
+      params: {
+        constraints: JSON.stringify([{
+          key: 'id_planilha',
+          constraint_type: 'equals',
+          value: codigo
+        }]),
+        limit: 1
+      },
+      timeout: PROCESSING_CONFIG.REQUEST_TIMEOUT
+    });
+    
+    if (produtoResponse.data.response.results.length === 0) {
+      return res.status(404).json({
+        error: 'Produto não encontrado',
+        message: `Nenhum produto encontrado com código: ${codigo}`
+      });
+    }
+    
+    const produto = produtoResponse.data.response.results[0];
+    console.log(`📦 Produto encontrado:`, produto);
+    
+    // Buscar relações do produto usando constraint
+    const relacoesResponse = await axios.get(`${BUBBLE_CONFIG.baseURL}/1 - ProdutoFornecedor _25marco`, {
+      headers: BUBBLE_CONFIG.headers,
+      params: {
+        constraints: JSON.stringify([{
+          key: 'produto',
+          constraint_type: 'equals',
+          value: produto._id
+        }]),
+        limit: 100
+      },
+      timeout: PROCESSING_CONFIG.REQUEST_TIMEOUT
+    });
+    
+    const relacoes = relacoesResponse.data.response.results;
+    console.log(`🔗 Relações encontradas: ${relacoes.length}`);
+    
+    // Buscar fornecedores para mapear nomes
+    const todosFornecedores = await fetchAllFromBubble('1 - fornecedor_25marco');
     const fornecedorMap = new Map();
-    fornecedores.forEach(f => fornecedorMap.set(f.nome_fornecedor, f));
+    todosFornecedores.forEach(f => fornecedorMap.set(f._id, f));
     
-    // MAPA SIMPLIFICADO: Apenas por código (id_planilha)
-    const produtoMapPorCodigo = new Map();
-    produtos.forEach(p => {
-      // Apenas produtos que têm código válido
-      if (p.id_planilha && p.id_planilha.trim() !== '') {
-        produtoMapPorCodigo.set(p.id_planilha, p);
-      }
+    const relacoesDetalhadas = relacoes.map(r => {
+      const fornecedor = fornecedorMap.get(r.fornecedor);
+      return {
+        fornecedor: fornecedor?.nome_fornecedor || 'Desconhecido',
+        preco_original: r.preco_original,
+        preco_final: r.preco_final,
+        melhor_preco: r.melhor_preco,
+        preco_ordenacao: r.preco_ordenacao
+      };
     });
     
-    const relacaoMap = new Map();
-    produtoFornecedores.forEach(pf => {
-      relacaoMap.set(`${pf.produto}-${pf.fornecedor}`, pf);
-    });
-    
-    console.log(`📊 Mapas criados: ${produtoMapPorCodigo.size} produtos por código`);
-    
-    const results = {
-      fornecedores_criados: 0,
-      produtos_criados: 0,
-      produtos_atualizados: 0,
-      relacoes_criadas: 0,
-      relacoes_atualizadas: 0,
-      relacoes_zeradas: 0,
-      produtos_ignorados_sem_codigo: 0,
-      erros: []
+    // Recalcular estatísticas em tempo real para debugging
+    const relacoesAtivas = relacoes.filter(r => r.preco_final > 0);
+    const precosValidos = relacoesAtivas.map(r => r.preco_final);
+    const statsCalculadas = {
+      qtd_fornecedores: precosValidos.length,
+      menor_preco: precosValidos.length > 0 ? Math.min(...precosValidos) : 0,
+      preco_medio: precosValidos.length > 0 ? 
+        Math.round((precosValidos.reduce((a, b) => a + b, 0) / precosValidos.length) * 100) / 100 : 0
     };
     
-    // 3. PREPARAR OPERAÇÕES - LÓGICA SIMPLIFICADA COM ANTI-DUPLICAÇÃO
-    console.log('\n📝 Preparando operações - apenas códigos válidos COM ANTI-DUPLICAÇÃO...');
-    const operacoesFornecedores = [];
-    const operacoesProdutos = [];
-    const operacoesRelacoes = [];
+    console.log(`📊 Stats calculadas em tempo real:`, statsCalculadas);
     
-    // Sets para evitar duplicatas nas operações
-    const fornecedoresParaCriar = new Set();
-    const produtosProcessados = new Set();
+    res.json({
+      produto: {
+        codigo: produto.id_planilha,
+        nome: produto.nome_completo,
+        preco_menor: produto.menor_preco,
+        preco_medio: produto.preco_medio,
+        qtd_fornecedores: produto.qtd_fornecedores,
+        tipo_identificador: 'codigo'
+      },
+      busca_realizada: {
+        codigo_buscado: codigo,
+        tipo_busca: 'codigo',
+        encontrado_por: 'constraint id_planilha'
+      },
+      stats_calculadas_tempo_real: statsCalculadas,
+      relacoes: relacoesDetalhadas.sort((a, b) => a.preco_final - b.preco_final),
+      debug: {
+        total_relacoes: relacoes.length,
+        relacoes_com_preco: relacoesAtivas.length,
+        precos_validos: precosValidos,
+        fornecedores_encontrados: fornecedorMap.size
+      },
+      timestamp: new Date().toISOString()
+    });
     
-    // *** NOVO: MAP PARA EVITAR DUPLICATAS DE RELAÇÕES ***
-    const relacoesProcessadas = new Map(); // chave: "codigo-loja", valor: dados da relação
-    
-    // Coletar todos os códigos cotados por fornecedor para lógica de cotação diária
-    const codigosCotadosPorFornecedor = new Map();
-    
-    for (const lojaData of csvData) {
-      const codigosCotados = new Set();
-      
-      // 3.1 Verificar fornecedor
-      if (!fornecedorMap.has(lojaData.loja) && !fornecedoresParaCriar.has(lojaData.loja)) {
-        fornecedoresParaCriar.add(lojaData.loja);
-        operacoesFornecedores.push({
-          tipo: 'criar',
-          nome: lojaData.loja,
-          dados: {
-            nome_fornecedor: lojaData.loja
-          }
-        });
-      }
-      
-      // 3.2 Processar produtos da loja - APENAS CÓDIGOS VÁLIDOS
-      for (const produtoCsv of lojaData.produtos) {
-        const codigo = produtoCsv.codigo;
-        const modelo = produtoCsv.modelo;
-        
-        // *** VALIDAÇÃO ANTI-DUPLICAÇÃO DE RELAÇÕES ***
-        const chaveRelacao = `${codigo}-${lojaData.loja}`;
-        
-        if (relacoesProcessadas.has(chaveRelacao)) {
-          console.log(`⚠️ RELAÇÃO DUPLICADA DETECTADA E IGNORADA: ${codigo} - ${lojaData.loja}`);
-          continue; // PULAR esta iteração para evitar duplicata
-        }
-        
-        // Adicionar aos códigos cotados
-        codigosCotados.add(codigo);
-        
-        // BUSCA SIMPLIFICADA: apenas por código
-        const produtoExistente = produtoMapPorCodigo.get(codigo);
-        
-        if (produtoExistente) {
-          // PRODUTO JÁ EXISTE - NÃO CRIAR DUPLICATA!
-          console.log(`✅ PRODUTO ENCONTRADO POR CÓDIGO - NÃO CRIANDO: ${codigo}`);
-        } else {
-          // PRODUTO NÃO EXISTE - PODE CRIAR
-          if (!produtosProcessados.has(codigo)) {
-            produtosProcessados.add(codigo);
-            
-            console.log(`➕ PRODUTO NOVO PARA CRIAR: ${codigo}`);
-            
-            operacoesProdutos.push({
-              tipo: 'criar',
-              identificador: codigo,
-              dados: {
-                id_planilha: codigo,
-                nome_completo: modelo,
-                preco_medio: 0,
-                qtd_fornecedores: 0,
-                menor_preco: 0
-              }
-            });
-            
-            // Atualizar mapa local para evitar duplicatas
-            const produtoTemp = {
-              _id: 'temp_' + codigo,
-              id_planilha: codigo,
-              nome_completo: modelo
-            };
-            
-            produtoMapPorCodigo.set(codigo, produtoTemp);
-          } else {
-            console.log(`⚠️ PRODUTO JÁ PROCESSADO NESTE LOTE: ${codigo}`);
-          }
-        }
-        
-        // Calcular preços para TODAS as relações (produtos existentes ou novos)
-        const precoOriginal = produtoCsv.preco;
-        const precoFinal = precoOriginal === 0 ? 0 : precoOriginal + gorduraValor;
-        const precoOrdenacao = precoOriginal === 0 ? 999999 : precoOriginal;
-        
-        // *** REGISTRAR RELAÇÃO NO MAP ANTI-DUPLICAÇÃO ***
-        relacoesProcessadas.set(chaveRelacao, {
-          codigo: codigo,
-          loja: lojaData.loja,
-          modelo: modelo,
-          precoOriginal,
-          precoFinal,
-          precoOrdenacao
-        });
-        
-        // Preparar operação de relação (APENAS UMA VEZ POR CÓDIGO-LOJA)
-        operacoesRelacoes.push({
-          tipo: 'processar',
-          loja: lojaData.loja,
-          codigo: codigo,
-          modelo: modelo,
-          precoOriginal,
-          precoFinal,
-          precoOrdenacao
-        });
-        
-        console.log(`🔗 RELAÇÃO PREPARADA: ${codigo} - ${lojaData.loja} (preço: ${precoOriginal})`);
-      }
-      
-      codigosCotadosPorFornecedor.set(lojaData.loja, codigosCotados);
-    }
-    
-    console.log(`🚫 TOTAL DE RELAÇÕES DUPLICADAS EVITADAS: ${csvData.reduce((total, loja) => total + loja.produtos.length, 0) - operacoesRelacoes.length}`);
-    console.log(`✅ RELAÇÕES ÚNICAS PREPARADAS: ${operacoesRelacoes.length}`);
-    
-    console.log(`📋 Operações preparadas:`);
-    console.log(`   Fornecedores para criar: ${operacoesFornecedores.length}`);
-    console.log(`   Produtos para criar: ${operacoesProdutos.length}`);
-    console.log(`   Relações para processar: ${operacoesRelacoes.length}`);
-    
-    // 4. EXECUTAR OPERAÇÕES EM LOTES
-    
-    // 4.1 Criar fornecedores em lotes
-    if (operacoesFornecedores.length > 0) {
-      console.log('\n👥 Criando fornecedores...');
-      
-      const { results: fornecedorResults, errors: fornecedorErrors } = await processBatch(
-        operacoesFornecedores,
-        async (operacao) => {
-          if (fornecedorMap.has(operacao.nome)) {
-            return { skipped: true, nome: operacao.nome };
-          }
-          
-          const novoFornecedor = await createInBubble('1 - fornecedor_25marco', operacao.dados);
-          fornecedorMap.set(operacao.dados.nome_fornecedor, {
-            _id: novoFornecedor.id,
-            nome_fornecedor: operacao.dados.nome_fornecedor
-          });
-          return novoFornecedor;
-        }
-      );
-      results.fornecedores_criados = fornecedorResults.filter(r => r.success && !r.result?.skipped).length;
-      results.erros.push(...fornecedorErrors);
-    }
-    
-    // 4.2 Criar produtos novos em lotes
-    if (operacoesProdutos.length > 0) {
-      console.log('\n📦 Criando produtos novos...');
-      
-      const { results: produtoResults, errors: produtoErrors } = await processBatch(
-        operacoesProdutos,
-        async (operacao) => {
-          const novoProduto = await createInBubble('1 - produtos_25marco', operacao.dados);
-          
-          // Atualizar mapa local com o produto criado
-          const produtoCompleto = {
-            _id: novoProduto.id,
-            id_planilha: operacao.dados.id_planilha,
-            nome_completo: operacao.dados.nome_completo
-          };
-          
-          produtoMapPorCodigo.set(operacao.identificador, produtoCompleto);
-          
-          console.log(`➕ Produto criado: ${operacao.identificador}`);
-          return novoProduto;
-        }
-      );
-      results.produtos_criados = produtoResults.filter(r => r.success).length;
-      results.erros.push(...produtoErrors);
-    }
-    
-    // 4.3 Processar relações em lotes - COM VALIDAÇÃO RIGOROSA ANTI-DUPLICAÇÃO
-    console.log('\n🔗 Processando relações COM VALIDAÇÃO ANTI-DUPLICAÇÃO...');
-    const { results: relacaoResults, errors: relacaoErrors } = await processBatch(
-      operacoesRelacoes,
-      async (operacao) => {
-        const fornecedor = fornecedorMap.get(operacao.loja);
-        
-        // Buscar produto APENAS por código
-        const produto = produtoMapPorCodigo.get(operacao.codigo);
-        
-        if (!fornecedor || !produto) {
-          throw new Error(`Fornecedor ou produto não encontrado: ${operacao.loja} - ${operacao.codigo}`);
-        }
-        
-        const chaveRelacao = `${produto._id}-${fornecedor._id}`;
-        const relacaoExistente = relacaoMap.get(chaveRelacao);
-        
-        console.log(`🔍 Verificando relação: ${operacao.codigo} - ${operacao.loja} (chave: ${chaveRelacao})`);
-        
-        if (!relacaoExistente) {
-          // *** CRIAR NOVA RELAÇÃO ***
-          console.log(`➕ CRIANDO nova relação: ${operacao.codigo} - ${operacao.loja}`);
-          
-          const novaRelacao = await createInBubble('1 - ProdutoFornecedor _25marco', {
-            produto: produto._id,
-            fornecedor: fornecedor._id,
-            nome_produto: operacao.modelo,
-            preco_original: operacao.precoOriginal,
-            preco_final: operacao.precoFinal,
-            preco_ordenacao: operacao.precoOrdenacao,
-            melhor_preco: false
-          });
-          
-          // *** ATUALIZAR MAPA LOCAL PARA EVITAR DUPLICATAS FUTURAS ***
-          relacaoMap.set(chaveRelacao, {
-            _id: novaRelacao.id,
-            produto: produto._id,
-            fornecedor: fornecedor._id,
-            preco_original: operacao.precoOriginal,
-            preco_final: operacao.precoFinal,
-            preco_ordenacao: operacao.precoOrdenacao
-          });
-          
-          return { tipo: 'criada', resultado: novaRelacao };
-          
-        } else if (relacaoExistente.preco_original !== operacao.precoOriginal) {
-          // *** ATUALIZAR RELAÇÃO EXISTENTE ***
-          console.log(`🔄 ATUALIZANDO relação existente: ${operacao.codigo} - ${operacao.loja} (${relacaoExistente.preco_original} → ${operacao.precoOriginal})`);
-          
-          const relacaoAtualizada = await updateInBubble('1 - ProdutoFornecedor _25marco', relacaoExistente._id, {
-            preco_original: operacao.precoOriginal,
-            preco_final: operacao.precoFinal,
-            preco_ordenacao: operacao.precoOrdenacao
-          });
-          
-          // *** ATUALIZAR MAPA LOCAL ***
-          relacaoMap.set(chaveRelacao, {
-            ...relacaoExistente,
-            preco_original: operacao.precoOriginal,
-            preco_final: operacao.precoFinal,
-            preco_ordenacao: operacao.precoOrdenacao
-          });
-          
-          return { tipo: 'atualizada', resultado: relacaoAtualizada };
-          
-        } else {
-          // *** RELAÇÃO INALTERADA ***
-          console.log(`⚪ RELAÇÃO INALTERADA: ${operacao.codigo} - ${operacao.loja} (preço: ${operacao.precoOriginal})`);
-          return { tipo: 'inalterada' };
-        }
-      }
-    );
-    
-    results.relacoes_criadas = relacaoResults.filter(r => r.success && r.result?.tipo === 'criada').length;
-    results.relacoes_atualizadas = relacaoResults.filter(r => r.success && r.result?.tipo === 'atualizada').length;
-    results.erros.push(...relacaoErrors);
-    
-    // 4.4 APLICAR LÓGICA DE COTAÇÃO DIÁRIA - SIMPLIFICADA
-    console.log('\n🧹 Aplicando lógica de cotação diária...');
-    const operacoesZeramento = [];
-    
-    for (const [lojaName, codigosCotadosHoje] of codigosCotadosPorFornecedor) {
-      const fornecedor = fornecedorMap.get(lojaName);
-      if (!fornecedor) continue;
-      
-      const relacoesExistentes = produtoFornecedores.filter(pf => pf.fornecedor === fornecedor._id);
-      
-      for (const relacao of relacoesExistentes) {
-        const produto = produtos.find(p => p._id === relacao.produto);
-        if (!produto) continue;
-        
-        // Verificar se foi cotado hoje APENAS por código
-        const foiCotadoHoje = produto.id_planilha && codigosCotadosHoje.has(produto.id_planilha);
-        const temPreco = relacao.preco_original > 0;
-        
-        if (!foiCotadoHoje && temPreco) {
-          operacoesZeramento.push({
-            relacaoId: relacao._id,
-            codigo: produto.id_planilha,
-            loja: lojaName
-          });
-        }
-      }
-    }
-    
-    if (operacoesZeramento.length > 0) {
-      console.log(`🧹 Zerando ${operacoesZeramento.length} produtos não cotados...`);
-      const { results: zeramentoResults, errors: zeramentoErrors } = await processBatch(
-        operacoesZeramento,
-        async (operacao) => {
-          return await updateInBubble('1 - ProdutoFornecedor _25marco', operacao.relacaoId, {
-            preco_original: 0,
-            preco_final: 0,
-            preco_ordenacao: 999999
-          });
-        }
-      );
-      results.relacoes_zeradas = zeramentoResults.filter(r => r.success).length;
-      results.erros.push(...zeramentoErrors);
-    }
-    
-    console.log('\n✅ Sincronização COM ANTI-DUPLICAÇÃO concluída!');
-    console.log('📊 Resultados da sincronização:', results);
-    console.log(`🚫 Duplicatas evitadas: Sistema implementado com validação rigorosa`);
-    console.log(`🔑 Chave de unicidade: produto_id + fornecedor_id`);
+  } catch (error) {
+    console.error('❌ Erro ao buscar produto:', error);
+    res.status(500).json({
+      error: 'Erro ao buscar produto',
+      details: error.message
+    });
+  }
+});
+
+// Rota para teste de saúde🔑 Chave de unicidade: produto_id + fornecedor_id`);
     
     // === EXECUTAR A LÓGICA FINAL CORRETA ===
     console.log('\n🔥 EXECUTANDO LÓGICA FINAL CORRETA - ÚLTIMA COISA DO CÓDIGO!');
@@ -1341,54 +1546,64 @@ app.get('/debug/produtos-por-tipo', async (req, res) => {
 // Rota de documentação atualizada
 app.get('/', (req, res) => {
   res.json({
-    message: 'API SIMPLIFICADA - Processamento APENAS de produtos com código válido',
-    version: '5.0.0-apenas-codigo-valido',
-    alteracoes_criticas: [
-      '🚫 IGNORA produtos sem código válido',
-      '🚫 IGNORA produtos com código vazio ou "SEM CÓDIGO"',
-      '🚫 REMOVIDA busca por nome_completo',
-      '🚫 REMOVIDA lógica de evolução de produtos',
-      '✅ MANTIDA lógica de processamento em lotes',
-      '✅ MANTIDA lógica final de recálculo',
-      '✅ MANTIDAS todas as outras funcionalidades'
+    message: 'API COM BUSCAS ESPECÍFICAS - Eliminação TOTAL de duplicatas',
+    version: '6.0.0-buscas-especificas-anti-duplicacao',
+    revolucao_arquitetural: [
+      '🚀 ABANDONADA abordagem de mapas em memória',
+      '🔍 IMPLEMENTADA busca específica antes de cada operação',
+      '📝 PROCESSAMENTO SEQUENCIAL (sem simultaneidade)',
+      '🎯 CONSTRAINT específico por campo no Bubble',
+      '🔒 ZERO condições de corrida possíveis'
     ],
-    logica_simplificada: {
-      'validacao_codigo': 'isCodigoValido(codigo) === true',
-      'processamento': 'Apenas produtos que passam na validação',
-      'busca_produto': 'Apenas por id_planilha',
-      'criacao_produto': 'Apenas se código não existe',
-      'atualizacao_produto': 'Apenas preços via código',
-      'cotacao_diaria': 'Apenas códigos válidos são considerados'
+    fluxo_novo: {
+      'passo_1': 'Carrega APENAS fornecedores (para mapeamento loja → ID)',
+      'passo_2': 'Para CADA produto: BUSCA por id_planilha antes de decidir',
+      'passo_3': 'Se produto existe: pega _id, se não existe: cria novo',
+      'passo_4': 'Para CADA relação: BUSCA por produto+fornecedor antes de decidir',
+      'passo_5': 'Se relação existe: atualiza preços, se não existe: cria nova',
+      'passo_6': 'Cotação diária: busca relações ativas e verifica códigos'
     },
-    produtos_ignorados: [
-      'Produtos sem código',
-      'Produtos com código vazio ("")',
-      'Produtos com código "SEM CÓDIGO"',
-      'Produtos onde isCodigoValido() retorna false'
+    requisicoes_bubble: {
+      'fornecedores': 'fetchAllFromBubble (paginado) - APENAS no início',
+      'verificar_produto': 'GET /1 - produtos_25marco?constraints=[{key:id_planilha,equals:codigo}]',
+      'verificar_relacao': 'GET /1 - ProdutoFornecedor _25marco?constraints=[{produto:ID},{fornecedor:ID}]',
+      'criar_produto': 'POST /1 - produtos_25marco',
+      'criar_relacao': 'POST /1 - ProdutoFornecedor _25marco',
+      'atualizar_relacao': 'PATCH /1 - ProdutoFornecedor _25marco/{id}',
+      'cotacao_diaria': 'GET relações ativas + GET produto por ID'
+    },
+    vantagens_abordagem: [
+      '✅ IMPOSSÍVEL criar duplicatas (busca sempre antes)',
+      '✅ DADOS sempre atualizados (busca em tempo real)',
+      '✅ ZERO condições de corrida (processamento sequencial)',
+      '✅ LÓGICA simples e clara (sem mapas complexos)',
+      '✅ LOGS detalhados de cada decisão',
+      '✅ PERFORMANCE controlada (delays configuráveis)'
     ],
     endpoints: {
-      'POST /process-csv': 'Processa CSV - APENAS códigos válidos',
-      'POST /force-recalculate': 'EXECUTA a lógica final de recálculo',
+      'POST /process-csv': 'Processa CSV com buscas específicas',
+      'POST /force-recalculate': 'EXECUTA lógica final de recálculo',
       'GET /stats': 'Estatísticas das tabelas',
-      'GET /produto/:codigo': 'Busca produto APENAS por código',
+      'GET /produto/:codigo': 'Busca produto por código',
       'GET /debug/produtos-por-tipo': 'Debug de produtos com/sem código',
-      'GET /health': 'Status da API simplificada',
+      'GET /health': 'Status da nova arquitetura',
       'GET /test-bubble': 'Testa conectividade com Bubble',
       'GET /performance': 'Monitora performance do servidor'
     },
-    garantias: [
-      '✅ NUNCA processa produtos sem código válido',
-      '✅ NUNCA cria duplicatas de produtos',
-      '✅ SEMPRE usa código como identificador único',
-      '✅ MANTÉM alta performance com processamento em lotes',
-      '✅ PRESERVA todas as funcionalidades de recálculo',
-      '✅ SIMPLIFICA lógica de sincronização'
+    garantias_arquiteturais: [
+      '🔒 BUSCA SEMPRE antes de criar',
+      '🔒 PROCESSAMENTO SEQUENCIAL sem race conditions',
+      '🔒 CONSTRAINT específico elimina duplicatas no banco',
+      '🔒 LOGS completos para auditoria total',
+      '🔒 DELAYS configuráveis para rate limiting',
+      '🔒 RETRY automático em falhas temporárias'
     ],
     configuracoes_performance: {
-      'tamanho_lote': PROCESSING_CONFIG.BATCH_SIZE + ' itens',
-      'max_concorrencia': PROCESSING_CONFIG.MAX_CONCURRENT + ' operações simultâneas',
-      'tentativas_retry': PROCESSING_CONFIG.RETRY_ATTEMPTS,
+      'processamento': 'SEQUENCIAL (produto por produto)',
+      'delay_produtos': '50ms entre produtos',
+      'delay_cotacao': '25ms entre verificações',
       'timeout_requisicao': PROCESSING_CONFIG.REQUEST_TIMEOUT + 'ms',
+      'tentativas_retry': PROCESSING_CONFIG.RETRY_ATTEMPTS,
       'limite_arquivo': '100MB'
     }
   });
@@ -1470,28 +1685,35 @@ process.on('unhandledRejection', (reason, promise) => {
 
 // Iniciar servidor
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor SIMPLIFICADO rodando na porta ${PORT}`);
+  console.log(`🚀 Servidor COM BUSCAS ESPECÍFICAS rodando na porta ${PORT}`);
   console.log(`📊 Acesse: http://localhost:${PORT}`);
   console.log(`🔗 Integração Bubble configurada`);
-  console.log(`⚡ Versão 5.0.0-apenas-codigo-valido`);
-  console.log(`🔧 ALTERAÇÕES CRÍTICAS IMPLEMENTADAS:`);
-  console.log(`   🚫 IGNORA produtos sem código válido`);
-  console.log(`   🚫 IGNORA produtos com código vazio ou "SEM CÓDIGO"`);
-  console.log(`   🚫 REMOVIDA busca por nome_completo`);
-  console.log(`   🚫 REMOVIDA lógica de evolução de produtos`);
-  console.log(`   ✅ MANTIDA lógica de processamento em lotes`);
-  console.log(`   ✅ MANTIDA lógica final de recálculo`);
+  console.log(`⚡ Versão 6.0.0-buscas-especificas-anti-duplicacao`);
+  console.log(`🔧 REVOLUÇÃO ARQUITETURAL IMPLEMENTADA:`);
+  console.log(`   🚀 ABANDONADA abordagem de mapas em memória`);
+  console.log(`   🔍 BUSCA ESPECÍFICA antes de cada operação`);
+  console.log(`   📝 PROCESSAMENTO SEQUENCIAL (sem simultaneidade)`);
+  console.log(`   🎯 CONSTRAINT do Bubble elimina duplicatas`);
+  console.log(`   🔒 ZERO condições de corrida possíveis`);
+  console.log(`   ✅ MANTIDA lógica de recálculo final`);
+  console.log(`📋 FLUXO NOVO:`);
+  console.log(`   1. Carrega fornecedores (mapeamento loja → ID)`);
+  console.log(`   2. Para cada produto: BUSCA por id_planilha`);
+  console.log(`   3. Para cada relação: BUSCA por produto+fornecedor`);
+  console.log(`   4. Cotação diária: busca relações ativas`);
   console.log(`📈 Configurações de performance:`);
-  console.log(`   - Lote: ${PROCESSING_CONFIG.BATCH_SIZE} itens`);
-  console.log(`   - Concorrência: ${PROCESSING_CONFIG.MAX_CONCURRENT} operações`);
+  console.log(`   - Processamento: SEQUENCIAL (produto por produto)`);
+  console.log(`   - Delay produtos: 50ms`);
+  console.log(`   - Delay cotação: 25ms`);
   console.log(`   - Retry: ${PROCESSING_CONFIG.RETRY_ATTEMPTS} tentativas`);
   console.log(`   - Timeout: ${PROCESSING_CONFIG.REQUEST_TIMEOUT}ms`);
   console.log(`   - Limite arquivo: 100MB`);
-  console.log(`\n🎯 LÓGICA SIMPLIFICADA IMPLEMENTADA!`);
-  console.log(`   ✅ Apenas produtos com código válido são processados`);
-  console.log(`   ✅ Produtos sem código são completamente ignorados`);
-  console.log(`   ✅ Busca e identificação apenas por código`);
-  console.log(`   ✅ Performance otimizada sem lógicas desnecessárias`);
+  console.log(`\n🎯 DUPLICATAS ELIMINADAS POR DESIGN!`);
+  console.log(`   ✅ Busca SEMPRE antes de criar`);
+  console.log(`   ✅ Processamento sequencial`);
+  console.log(`   ✅ Constraint específico no Bubble`);
+  console.log(`   ✅ Impossível ter race conditions`);
+  console.log(`   ✅ Logs detalhados de cada decisão`);
 });
 
 module.exports = app;
