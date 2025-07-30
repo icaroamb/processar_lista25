@@ -320,12 +320,14 @@ async function backupParaHistorico() {
     console.log(`📋 Iniciando cópia de ${todosOsItens.length} itens para histórico...`);
     
     const operacoesCopia = todosOsItens.map(item => {
-              // Adicionar timestamp do backup
-        const dadosComTimestamp = {
-          ...operacao.dadosOriginais,
-          data_backup: new Date().toISOString(),
-          item_id_original: operacao.item_id_original
-        };
+      const { _id, ...dadosOriginais } = item;
+      
+      // Preparar dados para histórico removendo campos específicos do Bubble
+      const dadosParaHistorico = {
+        ...dadosOriginais,
+        data_backup: new Date().toISOString(),
+        item_id_original: _id
+      };
       
       return {
         dadosOriginais: dadosParaHistorico,
@@ -339,26 +341,7 @@ async function backupParaHistorico() {
       async (operacao) => {
         console.log(`📋 Copiando para histórico: ${operacao.debug_info}`);
         
-        // Adicionar timestamp do backup
-        const dadosComTimestamp = {
-          ...operacao.dadosOriginais,
-          data_backup: new Date().toISOString(),
-          item_id_original: operacao.item_id_original
-        };
-        
-    const { results: backupResults, errors: backupErrors } = await processBatch(
-      operacoesCopia,
-      async (operacao) => {
-        console.log(`📋 Copiando para histórico: ${operacao.debug_info}`);
-        
-        // Adicionar timestamp do backup
-        const dadosComTimestamp = {
-          ...operacao.dadosOriginais,
-          data_backup: new Date().toISOString(),
-          item_id_original: operacao.item_id_original
-        };
-        
-        return await createInBubble('1 - historico_precos', dadosComTimestamp);
+        return await createInBubble('1 - historico_precos', operacao.dadosOriginais);
       }
     );
     
