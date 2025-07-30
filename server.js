@@ -245,11 +245,170 @@ async function deleteFromBubble(tableName, itemId) {
   });
 }
 
+// NOVA FUNÇÃO: Copiar todos os dados para histórico antes de deletar
+async function copiarParaHistorico() {
+  console.log('\n📋 === COPIANDO DADOS PARA HISTÓRICO ANTES DE DELETAR ===');
+  
+  try {
+    let todosOsItens = [];
+    let cursor = 0;
+    let remaining = 1;
+    let totalPaginas = 0;
+    
+    // 1. BUSCAR TODOS OS ITENS DA TABELA ORIGINAL COM PAGINAÇÃO COMPLETA
+    console.log('📊 Buscando TODOS os itens da tabela ProdutoFornecedor para copiar...');
+    
+    while (remaining > 0) {
+      totalPaginas++;
+      console.log(`📊 Buscando página ${totalPaginas} com cursor: ${cursor}`);
+      
+      const response = await retryOperation(async () => {
+        return await axios.get(`${BUBBLE_CONFIG.baseURL}/1 - ProdutoFornecedor _25marco`, {
+          headers: BUBBLE_CONFIG.headers,
+          params: { cursor, limit: 100 },
+          timeout: PROCESSING_CONFIG.REQUEST_TIMEOUT
+        });
+      });
+      
+      const data = response.data;
+      
+      if (!data.response || !data.response.results) {
+        throw new Error('Resposta inválida da API na busca para cópia');
+      }
+      
+      const novosItens = data.response.results;
+      
+      // Se não há novos resultados, sair do loop
+      if (!novosItens || novosItens.length === 0) {
+        console.log(`📊 Página ${totalPaginas}: Nenhum novo resultado, finalizando busca`);
+        break;
+      }
+      
+      todosOsItens = todosOsItens.concat(novosItens);
+      remaining = data.response.remaining || 0;
+      
+      console.log(`📊 Página ${totalPaginas}: ${novosItens.length} itens carregados (total: ${todosOsItens.length}, restam: ${remaining})`);
+      
+      // INCREMENTAR CURSOR DE 100 EM 100
+      cursor += 100;
+      
+      // Pequeno delay para evitar rate limiting
+      if (remaining > 0) {
+        await delay(50);
+      }
+      
+      // Proteção contra loop infinito
+      if (totalPaginas > 10000) {
+        console.warn(`⚠️ Atingido limite de páginas (${totalPaginas}). Possível loop infinito.`);
+        break;
+      }
+    }
+    
+    console.log(`✅ BUSCA COMPLETA: ${todosOsItens.length} itens encontrados para copiar`);
+    
+    if (todosOsItens.length === 0) {
+      console.log('ℹ️ Tabela ProdutoFornecedor está vazia - nada para copiar');
+      return { 
+        itens_copiados: 0, 
+        total_encontrados: 0, 
+        paginas_buscadas: totalPaginas,
+        erros: 0 
+      };
+    }
+    
+    // 2. PREPARAR DADOS PARA CÓPIA (remover _id e manter resto)
+    console.log(`📋 Preparando ${todosOsItens.length} itens para cópia...`);
+    
+    const operacoesCopia = todosOsItens.map(item => {
+      // Remover o _id para criar novo registro no histórico
+      const { _id, ...dadosParaCopia } = item;
+      
+      return {
+        dadosOriginais: dadosParaCopia,
+        debug_info: `${item.nome_produto || 'sem_nome'} - ${item.preco_final || 0}`
+      };
+    });
+    
+    // 3. CRIAR TODOS OS ITENS NO HISTÓRICO EM LOTES
+    console.log(`📋 Criando ${operacoesCopia.length} itens no histórico...`);
+    
+    const { results: copyResults, errors: copyErrors } = await processBatch(
+      operacoesCopia,
+      async (operacao) => {
+        console.log(`📋 Copiando para histórico: ${operacao.debug_info}`);
+        return await createInBubble('1 - historico_precos', operacao.dadosOriginais);
+      }
+    );
+    
+    const itensCopiados = copyResults.filter(r => r.success).length;
+    const itensComErro = copyResults.filter(r => !r.success).length;
+    
+    console.log(`✅ CÓPIA PARA HISTÓRICO COMPLETA:`);
+    console.log(`   - Itens encontrados: ${todosOsItens.length}`);
+    console.log(`   - Itens copiados: ${itensCopiados}`);
+    console.log(`   - Itens com erro: ${itensComErro}`);
+    console.log(`   - Erros de processamento: ${copyErrors.length}`);
+    
+    // 4. VERIFICAÇÃO FINAL - CONFIRMAR QUANTIDADE NO HISTÓRICO
+    console.log('🔍 Verificação final - confirmando itens no histórico...');
+    
+    const verificacaoResponse = await retryOperation(async () => {
+      return await axios.get(`${BUBBLE_CONFIG.baseURL}/1 - historico_precos`, {
+        headers: BUBBLE_CONFIG.headers,
+        params: { cursor: 0, limit: 1 },
+        timeout: PROCESSING_CONFIG.REQUEST_TIMEOUT
+      });
+    });
+    
+    const totalNoHistorico = verificacaoResponse.data?.response?.count || 0;
+    
+    console.log(`📊 Total de itens no histórico após cópia: ${totalNoHistorico}`);
+    
+    if (copyErrors.length > 0) {
+      console.warn(`⚠️ Avisos durante a cópia: ${copyErrors.length} erros`);
+      copyErrors.forEach((erro, index) => {
+        console.warn(`   Erro ${index + 1}: ${erro.error}`);
+      });
+    }
+    
+    const sucessoCompleto = itensCopiados === todosOsItens.length;
+    
+    if (!sucessoCompleto) {
+      console.error(`❌ ERRO: Nem todos os itens foram copiados! ${itensCopiados}/${todosOsItens.length}`);
+      throw new Error(`Cópia incompleta: apenas ${itensCopiados}/${todosOsItens.length} itens foram copiados`);
+    }
+    
+    console.log('✅ CONFIRMADO: Todos os dados foram copiados para o histórico!');
+    
+    return {
+      itens_copiados: itensCopiados,
+      total_encontrados: todosOsItens.length,
+      paginas_buscadas: totalPaginas,
+      erros: copyErrors.length,
+      total_no_historico: totalNoHistorico,
+      verificacao_final: {
+        sucesso_completo: sucessoCompleto
+      }
+    };
+    
+  } catch (error) {
+    console.error('❌ ERRO CRÍTICO na cópia para histórico:', error);
+    throw error;
+  }
+}
 // NOVA FUNÇÃO CORRIGIDA: Deletar TODOS os itens da tabela ProdutoFornecedor COM PAGINAÇÃO COMPLETA
 async function deleteAllProdutoFornecedor() {
   console.log('\n🗑️ === DELETANDO TODOS OS ITENS DA TABELA ProdutoFornecedor (COM PAGINAÇÃO COMPLETA) ===');
   
   try {
+    // *** PRIMEIRO: COPIAR TODOS OS DADOS PARA O HISTÓRICO ***
+    console.log('📋 PASSO 1: Copiando dados atuais para histórico...');
+    const resultadoCopia = await copiarParaHistorico();
+    console.log('✅ Cópia para histórico concluída:', resultadoCopia);
+    
+    // *** DEPOIS: DELETAR TODOS OS ITENS ***
+    console.log('🗑️ PASSO 2: Deletando todos os itens da tabela atual...');
+    
     let todosOsItens = [];
     let cursor = 0;
     let remaining = 1; // Iniciar com 1 para entrar no loop
@@ -309,6 +468,7 @@ async function deleteAllProdutoFornecedor() {
     if (todosOsItens.length === 0) {
       console.log('✅ Tabela já está vazia - nada para deletar');
       return { 
+        copia_historico: resultadoCopia,
         itens_deletados: 0, 
         total_encontrados: 0, 
         paginas_buscadas: totalPaginas,
@@ -370,6 +530,7 @@ async function deleteAllProdutoFornecedor() {
     }
     
     return {
+      copia_historico: resultadoCopia,
       itens_deletados: itensDeletados,
       total_encontrados: todosOsItens.length,
       paginas_buscadas: totalPaginas,
@@ -1074,6 +1235,35 @@ app.post('/force-recalculate', async (req, res) => {
   }
 });
 
+// Rota para copiar manualmente dados para histórico
+app.post('/copy-to-history', async (req, res) => {
+  try {
+    console.log('\n📋 === COPIANDO MANUALMENTE DADOS PARA HISTÓRICO ===');
+    
+    const startTime = Date.now();
+    const results = await copiarParaHistorico();
+    const endTime = Date.now();
+    const processingTime = (endTime - startTime) / 1000;
+    
+    console.log(`📋 Cópia para histórico concluída em ${processingTime}s`);
+    
+    res.json({
+      success: true,
+      message: 'Dados copiados para histórico com sucesso',
+      tempo_processamento: processingTime + 's',
+      resultados: results,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Erro na cópia para histórico:', error);
+    res.status(500).json({
+      error: 'Erro ao copiar dados para histórico',
+      details: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
 // Rota para deletar manualmente toda a tabela ProdutoFornecedor
 app.post('/delete-all-relations', async (req, res) => {
   try {
@@ -1088,7 +1278,7 @@ app.post('/delete-all-relations', async (req, res) => {
     
     res.json({
       success: true,
-      message: 'Todos os itens da tabela ProdutoFornecedor foram deletados',
+      message: 'Dados copiados para histórico e tabela ProdutoFornecedor deletada',
       tempo_processamento: processingTime + 's',
       resultados: results,
       timestamp: new Date().toISOString()
@@ -1106,10 +1296,11 @@ app.post('/delete-all-relations', async (req, res) => {
 
 app.get('/stats', async (req, res) => {
   try {
-    const [fornecedores, produtos, produtoFornecedores] = await Promise.all([
+    const [fornecedores, produtos, produtoFornecedores, historico] = await Promise.all([
       fetchAllFromBubble('1 - fornecedor_25marco'),
       fetchAllFromBubble('1 - produtos_25marco'),
-      fetchAllFromBubble('1 - ProdutoFornecedor _25marco')
+      fetchAllFromBubble('1 - ProdutoFornecedor _25marco'),
+      fetchAllFromBubble('1 - historico_precos')
     ]);
     
     // Estatísticas para produtos com código válido
@@ -1122,12 +1313,23 @@ app.get('/stats', async (req, res) => {
       produtos_com_codigo_valido: produtosComCodigo,
       produtos_sem_codigo_valido: produtosSemCodigo,
       total_relacoes: produtoFornecedores.length,
+      total_historico: historico.length,
       fornecedores_ativos: fornecedores.filter(f => f.status_ativo === 'yes').length,
       produtos_com_preco: produtos.filter(p => p.menor_preco > 0).length,
       relacoes_ativas: produtoFornecedores.filter(pf => pf.status_ativo === 'yes').length,
       relacoes_com_preco: produtoFornecedores.filter(pf => pf.preco_final > 0).length,
-      observacao: 'Sistema agora processa APENAS produtos com códigos válidos',
+      historico_com_preco: historico.filter(h => h.preco_final > 0).length,
+      observacao: 'Sistema agora processa APENAS produtos com códigos válidos e mantém histórico',
       timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      error: 'Erro ao buscar estatísticas',
+      details: error.message
+    });
+  }
+});ISOString()
     });
     
   } catch (error) {
@@ -1231,13 +1433,15 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     message: 'API funcionando corretamente',
-    version: '5.0.0-apenas-codigos-validos',
+    version: '6.0.0-com-historico-completo',
     melhorias_versao: [
+      'COPIA todos os dados para histórico antes de deletar',
       'PROCESSA APENAS produtos com códigos válidos',
       'IGNORA completamente produtos sem código',
       'DELETA e RECRIA toda a tabela ProdutoFornecedor',
       'Busca APENAS por código (id_planilha)',
-      'Lógica simplificada e mais rápida'
+      'Lógica simplificada e mais rápida',
+      'PRESERVA histórico completo de preços'
     ],
     funcionalidades_removidas: [
       'Busca por nome_completo',
@@ -1332,20 +1536,22 @@ app.get('/', (req, res) => {
       '⚡ LÓGICA SIMPLIFICADA e mais rápida'
     ],
     fluxo_simplificado: {
-      'passo_1': 'Deleta TODOS os itens da tabela ProdutoFornecedor',
-      'passo_2': 'Processa CSV ignorando produtos sem código',
-      'passo_3': 'Busca produtos APENAS por código',
-      'passo_4': 'Cria produtos novos se não existir por código',
-      'passo_5': 'Cria TODAS as relações do zero',
-      'passo_6': 'Executa lógica final de recálculo'
+      'passo_1': 'Copia TODOS os dados atuais para tabela 1 - historico_precos',
+      'passo_2': 'Deleta TODOS os itens da tabela ProdutoFornecedor',
+      'passo_3': 'Processa CSV ignorando produtos sem código',
+      'passo_4': 'Busca produtos APENAS por código',
+      'passo_5': 'Cria produtos novos se não existir por código',
+      'passo_6': 'Cria TODAS as relações do zero',
+      'passo_7': 'Executa lógica final de recálculo'
     },
     endpoints: {
-      'POST /process-csv': 'Processa CSV (apenas códigos válidos)',
+      'POST /process-csv': 'Processa CSV (copia para histórico + deleta + recria)',
       'POST /force-recalculate': 'EXECUTA a lógica final de recálculo',
-      'POST /delete-all-relations': 'Deleta manualmente toda tabela ProdutoFornecedor',
-      'GET /stats': 'Estatísticas das tabelas',
+      'POST /copy-to-history': 'Copia manualmente dados para histórico',
+      'POST /delete-all-relations': 'Copia para histórico e deleta tabela ProdutoFornecedor',
+      'GET /stats': 'Estatísticas das tabelas (incluindo histórico)',
       'GET /produto/:codigo': 'Busca produto APENAS por código',
-      'GET /health': 'Status da API simplificada',
+      'GET /health': 'Status da API com histórico',
       'GET /test-bubble': 'Testa conectividade com Bubble',
       'GET /performance': 'Monitora performance do servidor'
     },
@@ -1353,16 +1559,20 @@ app.get('/', (req, res) => {
       'gordura_valor': 'number - Valor a ser adicionado ao preço original'
     },
     estatisticas_retornadas: {
+      'copia_historico': 'Resultado da cópia para histórico antes da deleção',
       'tabela_deletada': 'Resultado da deleção da tabela ProdutoFornecedor',
       'produtos_criados': 'Produtos realmente novos criados',
       'fornecedores_criados': 'Novos fornecedores criados',
       'relacoes_criadas': 'TODAS as relações criadas do zero',
-      'produtos_ignorados_sem_codigo': 'Produtos ignorados por não ter código válido'
+      'produtos_ignorados_sem_codigo': 'Produtos ignorados por não ter código válido',
+      'total_historico': 'Total de registros preservados no histórico'
     },
     garantias: [
+      '✅ COPIA todos os dados para histórico antes de deletar',
       '✅ PROCESSA apenas produtos com códigos válidos',
       '✅ IGNORA produtos sem código ou "SEM CÓDIGO"',
       '✅ DELETA completamente a tabela a cada upload',
+      '✅ PRESERVA histórico completo de preços',
       '✅ CRIA tudo do zero garantindo consistência',
       '✅ LÓGICA SIMPLES e rápida',
       '✅ BUSCA apenas por código',
@@ -1457,24 +1667,28 @@ app.listen(PORT, () => {
   console.log(`🚀 Servidor SIMPLIFICADO rodando na porta ${PORT}`);
   console.log(`📊 Acesse: http://localhost:${PORT}`);
   console.log(`🔗 Integração Bubble configurada`);
-  console.log(`⚡ Versão 5.0.0-apenas-codigos-validos`);
+  console.log(`⚡ Versão 6.0.0-com-historico-completo`);
   console.log(`🔧 MUDANÇAS CRÍTICAS IMPLEMENTADAS:`);
+  console.log(`   📋 COPIA todos os dados para histórico antes de deletar`);
   console.log(`   🎯 PROCESSA APENAS produtos com códigos válidos`);
   console.log(`   🚫 IGNORA completamente produtos sem código`);
   console.log(`   🗑️ DELETA e RECRIA toda a tabela ProdutoFornecedor`);
   console.log(`   🔍 BUSCA APENAS por código (id_planilha)`);
   console.log(`   ⚡ LÓGICA SIMPLIFICADA e mais rápida`);
+  console.log(`   📊 PRESERVA histórico completo na tabela 1 - historico_precos`);
   console.log(`📈 Configurações de performance:`);
   console.log(`   - Lote: ${PROCESSING_CONFIG.BATCH_SIZE} itens`);
   console.log(`   - Concorrência: ${PROCESSING_CONFIG.MAX_CONCURRENT} operações`);
   console.log(`   - Retry: ${PROCESSING_CONFIG.RETRY_ATTEMPTS} tentativas`);
   console.log(`   - Timeout: ${PROCESSING_CONFIG.REQUEST_TIMEOUT}ms`);
   console.log(`   - Limite arquivo: 100MB`);
-  console.log(`\n🎯 SISTEMA SIMPLIFICADO!`);
+  console.log(`\n🎯 SISTEMA COMPLETO COM HISTÓRICO!`);
+  console.log(`   ✅ Copia dados para histórico`);
   console.log(`   ✅ Deleta tabela ProdutoFornecedor`);
   console.log(`   ✅ Processa apenas códigos válidos`);
   console.log(`   ✅ Ignora produtos sem código`);
   console.log(`   ✅ Cria tudo do zero`);
+  console.log(`   ✅ Preserva histórico completo`);
   console.log(`   ✅ Lógica final recalcula tudo`);
 });
 
