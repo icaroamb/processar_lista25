@@ -62,16 +62,13 @@ const upload = multer({
   }
 });
 
-// FUNÇÃO: Verificar se código é válido (MANTIDA)
+// FUNÇÃO SIMPLIFICADA: Verificar se código é válido (ÚNICA VALIDAÇÃO NECESSÁRIA)
 function isCodigoValido(codigo) {
   if (!codigo || codigo.toString().trim() === '' || codigo.toString().trim().toUpperCase() === 'SEM CÓDIGO') {
     return false;
   }
   return true;
 }
-
-// FUNÇÃO REMOVIDA: gerarIdentificadorProduto (não é mais necessária)
-// Agora usamos apenas códigos válidos como identificadores
 
 // Função para extrair preço numérico
 function extractPrice(priceString) {
@@ -137,7 +134,7 @@ async function retryOperation(operation, maxAttempts = PROCESSING_CONFIG.RETRY_A
   throw lastError;
 }
 
-// Função para buscar dados do Bubble com correção do loop infinito
+// Função para buscar dados do Bubble com paginação
 async function fetchAllFromBubble(tableName, filters = {}) {
   try {
     console.log(`🔍 Buscando dados de ${tableName}...`);
@@ -235,6 +232,63 @@ async function updateInBubble(tableName, itemId, data) {
     });
     return response.data;
   });
+}
+
+// Função para deletar item no Bubble com retry
+async function deleteFromBubble(tableName, itemId) {
+  return await retryOperation(async () => {
+    const response = await axios.delete(`${BUBBLE_CONFIG.baseURL}/${tableName}/${itemId}`, {
+      headers: BUBBLE_CONFIG.headers,
+      timeout: PROCESSING_CONFIG.REQUEST_TIMEOUT
+    });
+    return response.data;
+  });
+}
+
+// NOVA FUNÇÃO: Deletar TODOS os itens da tabela ProdutoFornecedor
+async function deleteAllProdutoFornecedor() {
+  console.log('\n🗑️ === DELETANDO TODOS OS ITENS DA TABELA ProdutoFornecedor ===');
+  
+  try {
+    // 1. Buscar TODOS os itens
+    const todosOsItens = await fetchAllFromBubble('1 - ProdutoFornecedor _25marco');
+    console.log(`🗑️ Encontrados ${todosOsItens.length} itens para deletar`);
+    
+    if (todosOsItens.length === 0) {
+      console.log('✅ Tabela já está vazia');
+      return { itens_deletados: 0 };
+    }
+    
+    // 2. Deletar em lotes
+    const operacoesDeletar = todosOsItens.map(item => ({
+      itemId: item._id
+    }));
+    
+    const { results: deleteResults, errors: deleteErrors } = await processBatch(
+      operacoesDeletar,
+      async (operacao) => {
+        console.log(`🗑️ Deletando item ${operacao.itemId}`);
+        return await deleteFromBubble('1 - ProdutoFornecedor _25marco', operacao.itemId);
+      }
+    );
+    
+    const itensDeletados = deleteResults.filter(r => r.success).length;
+    console.log(`✅ Itens deletados: ${itensDeletados}/${todosOsItens.length}`);
+    
+    if (deleteErrors.length > 0) {
+      console.warn(`⚠️ Erros na deleção: ${deleteErrors.length}`);
+    }
+    
+    return {
+      itens_deletados: itensDeletados,
+      total_encontrados: todosOsItens.length,
+      erros: deleteErrors.length
+    };
+    
+  } catch (error) {
+    console.error('❌ Erro ao deletar itens:', error);
+    throw error;
+  }
 }
 
 // FUNÇÃO FINAL CORRETA - COM PROCESSAMENTO EM LOTES PARA ALTA VELOCIDADE
@@ -435,7 +489,7 @@ async function executarLogicaFinalCorreta() {
   }
 }
 
-// Função otimizada para processar o CSV (CORRIGIDA - APENAS CÓDIGOS VÁLIDOS)
+// Função otimizada para processar o CSV (SIMPLIFICADA - APENAS CÓDIGOS VÁLIDOS)
 function processCSV(filePath) {
   return new Promise((resolve, reject) => {
     try {
@@ -489,29 +543,21 @@ function processCSV(filePath) {
             const modelo = columns[lojaConfig.indices[1]];
             const preco = columns[lojaConfig.indices[2]];
             
-            // *** NOVA LÓGICA: PROCESSAR APENAS SE TEM CÓDIGO VÁLIDO ***
+            // *** NOVA LÓGICA SIMPLIFICADA: APENAS CÓDIGOS VÁLIDOS ***
             if (isCodigoValido(codigo) && modelo && preco && 
-                modelo.trim() !== '' && 
-                preco.trim() !== '') {
+                modelo.trim() !== '' && preco.trim() !== '') {
               
               const precoNumerico = extractPrice(preco);
               
               produtos.push({
                 codigo: codigo.trim(),
                 modelo: modelo.trim(),
-                preco: precoNumerico,
-                identificador: codigo.trim(), // Sempre o código como identificador
-                tipo_identificador: 'codigo', // Sempre código
-                id_planilha: codigo.trim(),
-                nome_completo: modelo.trim()
+                preco: precoNumerico
               });
               
               produtosComCodigo++;
             } else {
-              // Contador para produtos ignorados (sem código)
-              if (modelo && preco && modelo.trim() !== '' && preco.trim() !== '') {
-                produtosSemCodigo++;
-              }
+              produtosSemCodigo++;
             }
           });
           
@@ -521,14 +567,14 @@ function processCSV(filePath) {
           }
         }
         
-        console.log(`✅ ${lojaConfig.nome}: ${produtos.length} produtos processados (${produtosSemCodigo} ignorados por não ter código)`);
+        console.log(`✅ ${lojaConfig.nome}: ${produtos.length} produtos válidos (${produtosSemCodigo} ignorados sem código)`);
         
         if (produtos.length > 0) {
           processedData.push({
             loja: lojaConfig.nome,
             total_produtos: produtos.length,
             produtos_com_codigo: produtosComCodigo,
-            produtos_sem_codigo: produtosSemCodigo, // Apenas para estatística
+            produtos_sem_codigo: produtosSemCodigo,
             produtos: produtos
           });
         }
@@ -591,51 +637,46 @@ async function processBatch(items, processorFunction, batchSize = PROCESSING_CON
 // Função principal para sincronizar com o Bubble - SIMPLIFICADA (APENAS CÓDIGOS)
 async function syncWithBubble(csvData, gorduraValor) {
   try {
-    console.log('\n🔄 Iniciando sincronização - APENAS produtos com código...');
+    console.log('\n🔄 Iniciando sincronização simplificada (apenas códigos válidos)...');
+    
+    // PRIMEIRO: DELETAR TODOS OS ITENS DA TABELA ProdutoFornecedor
+    const deleteResults = await deleteAllProdutoFornecedor();
+    console.log('🗑️ Deleção concluída:', deleteResults);
     
     // 1. CARREGAR DADOS EXISTENTES
     console.log('📊 Carregando dados existentes...');
-    const [fornecedores, produtos, produtoFornecedores] = await Promise.all([
+    const [fornecedores, produtos] = await Promise.all([
       fetchAllFromBubble('1 - fornecedor_25marco'),
-      fetchAllFromBubble('1 - produtos_25marco'),
-      fetchAllFromBubble('1 - ProdutoFornecedor _25marco')
+      fetchAllFromBubble('1 - produtos_25marco')
     ]);
     
-    console.log(`📊 Carregados: ${fornecedores.length} fornecedores, ${produtos.length} produtos, ${produtoFornecedores.length} relações`);
+    console.log(`📊 Carregados: ${fornecedores.length} fornecedores, ${produtos.length} produtos`);
     
-    // 2. CRIAR MAPAS OTIMIZADOS - APENAS POR CÓDIGO
+    // 2. CRIAR MAPAS OTIMIZADOS PARA BUSCA RÁPIDA (APENAS POR CÓDIGO)
     const fornecedorMap = new Map();
     fornecedores.forEach(f => fornecedorMap.set(f.nome_fornecedor, f));
     
-    // MAPA SIMPLIFICADO: Apenas por código (id_planilha)
+    // APENAS MAPA POR CÓDIGO (id_planilha)
     const produtoMapPorCodigo = new Map();
     produtos.forEach(p => {
-      // Apenas produtos que têm código válido
       if (p.id_planilha && p.id_planilha.trim() !== '') {
         produtoMapPorCodigo.set(p.id_planilha, p);
       }
     });
     
-    const relacaoMap = new Map();
-    produtoFornecedores.forEach(pf => {
-      relacaoMap.set(`${pf.produto}-${pf.fornecedor}`, pf);
-    });
-    
     console.log(`📊 Mapas criados: ${produtoMapPorCodigo.size} produtos por código`);
     
     const results = {
+      tabela_deletada: deleteResults,
       fornecedores_criados: 0,
       produtos_criados: 0,
-      produtos_atualizados: 0,
       relacoes_criadas: 0,
-      relacoes_atualizadas: 0,
-      relacoes_zeradas: 0,
       produtos_ignorados_sem_codigo: 0,
       erros: []
     };
     
-    // 3. PREPARAR OPERAÇÕES - LÓGICA SIMPLIFICADA
-    console.log('\n📝 Preparando operações - apenas códigos válidos...');
+    // 3. PREPARAR OPERAÇÕES SIMPLIFICADAS
+    console.log('\n📝 Preparando operações simplificadas (apenas códigos)...');
     const operacoesFornecedores = [];
     const operacoesProdutos = [];
     const operacoesRelacoes = [];
@@ -644,13 +685,8 @@ async function syncWithBubble(csvData, gorduraValor) {
     const fornecedoresParaCriar = new Set();
     const produtosProcessados = new Set();
     
-    // Coletar todos os códigos cotados por fornecedor para lógica de cotação diária
-    const codigosCotadosPorFornecedor = new Map();
-    
     for (const lojaData of csvData) {
-      const codigosCotados = new Set();
-      
-      // 3.1 Verificar fornecedor
+      // 3.1 Verificar fornecedor (evitar duplicatas)
       if (!fornecedorMap.has(lojaData.loja) && !fornecedoresParaCriar.has(lojaData.loja)) {
         fornecedoresParaCriar.add(lojaData.loja);
         operacoesFornecedores.push({
@@ -662,58 +698,48 @@ async function syncWithBubble(csvData, gorduraValor) {
         });
       }
       
-      // 3.2 Processar produtos da loja - APENAS CÓDIGOS VÁLIDOS
+      // 3.2 Processar produtos da loja (APENAS COM CÓDIGOS VÁLIDOS)
       for (const produtoCsv of lojaData.produtos) {
         const codigo = produtoCsv.codigo;
         const modelo = produtoCsv.modelo;
         
-        // Adicionar aos códigos cotados
-        codigosCotados.add(codigo);
-        
-        // BUSCA SIMPLIFICADA: apenas por código
+        // *** BUSCA APENAS POR CÓDIGO (SIMPLIFICADO) ***
         const produtoExistente = produtoMapPorCodigo.get(codigo);
         
-        if (produtoExistente) {
-          // PRODUTO JÁ EXISTE - NÃO CRIAR DUPLICATA!
-          console.log(`✅ PRODUTO ENCONTRADO POR CÓDIGO - NÃO CRIANDO: ${codigo}`);
-        } else {
-          // PRODUTO NÃO EXISTE - PODE CRIAR
-          if (!produtosProcessados.has(codigo)) {
-            produtosProcessados.add(codigo);
-            
-            console.log(`➕ PRODUTO NOVO PARA CRIAR: ${codigo}`);
-            
-            operacoesProdutos.push({
-              tipo: 'criar',
-              identificador: codigo,
-              dados: {
-                id_planilha: codigo,
-                nome_completo: modelo,
-                preco_medio: 0,
-                qtd_fornecedores: 0,
-                menor_preco: 0
-              }
-            });
-            
-            // Atualizar mapa local para evitar duplicatas
-            const produtoTemp = {
-              _id: 'temp_' + codigo,
+        if (!produtoExistente && !produtosProcessados.has(codigo)) {
+          // PRODUTO NÃO EXISTE - CRIAR NOVO
+          produtosProcessados.add(codigo);
+          
+          console.log(`➕ PRODUTO NOVO PARA CRIAR: ${codigo}`);
+          
+          operacoesProdutos.push({
+            tipo: 'criar',
+            codigo: codigo,
+            dados: {
               id_planilha: codigo,
-              nome_completo: modelo
-            };
-            
-            produtoMapPorCodigo.set(codigo, produtoTemp);
-          } else {
-            console.log(`⚠️ PRODUTO JÁ PROCESSADO NESTE LOTE: ${codigo}`);
-          }
+              nome_completo: modelo,
+              preco_medio: 0,
+              qtd_fornecedores: 0,
+              menor_preco: 0
+            }
+          });
+          
+          // Atualizar mapa local para evitar duplicatas
+          const produtoTemp = {
+            _id: 'temp_' + codigo,
+            id_planilha: codigo,
+            nome_completo: modelo
+          };
+          
+          produtoMapPorCodigo.set(codigo, produtoTemp);
         }
         
-        // Calcular preços para TODAS as relações (produtos existentes ou novos)
+        // Calcular preços para TODAS as relações
         const precoOriginal = produtoCsv.preco;
         const precoFinal = precoOriginal === 0 ? 0 : precoOriginal + gorduraValor;
         const precoOrdenacao = precoOriginal === 0 ? 999999 : precoOriginal;
         
-        // Preparar operação de relação (SEMPRE, para produtos existentes ou novos)
+        // Preparar operação de relação
         operacoesRelacoes.push({
           tipo: 'processar',
           loja: lojaData.loja,
@@ -724,8 +750,6 @@ async function syncWithBubble(csvData, gorduraValor) {
           precoOrdenacao
         });
       }
-      
-      codigosCotadosPorFornecedor.set(lojaData.loja, codigosCotados);
     }
     
     console.log(`📋 Operações preparadas:`);
@@ -774,9 +798,9 @@ async function syncWithBubble(csvData, gorduraValor) {
             nome_completo: operacao.dados.nome_completo
           };
           
-          produtoMapPorCodigo.set(operacao.identificador, produtoCompleto);
+          produtoMapPorCodigo.set(operacao.codigo, produtoCompleto);
           
-          console.log(`➕ Produto criado: ${operacao.identificador}`);
+          console.log(`➕ Produto criado: ${operacao.codigo}`);
           return novoProduto;
         }
       );
@@ -784,94 +808,35 @@ async function syncWithBubble(csvData, gorduraValor) {
       results.erros.push(...produtoErrors);
     }
     
-    // 4.3 Processar relações em lotes - SIMPLIFICADO
-    console.log('\n🔗 Processando relações...');
+    // 4.3 Processar relações em lotes (SEMPRE CRIAR NOVAS - TABELA FOI DELETADA)
+    console.log('\n🔗 Criando TODAS as relações (tabela foi deletada)...');
     const { results: relacaoResults, errors: relacaoErrors } = await processBatch(
       operacoesRelacoes,
       async (operacao) => {
         const fornecedor = fornecedorMap.get(operacao.loja);
-        
-        // Buscar produto APENAS por código
         const produto = produtoMapPorCodigo.get(operacao.codigo);
         
         if (!fornecedor || !produto) {
           throw new Error(`Fornecedor ou produto não encontrado: ${operacao.loja} - ${operacao.codigo}`);
         }
         
-        const chaveRelacao = `${produto._id}-${fornecedor._id}`;
-        const relacaoExistente = relacaoMap.get(chaveRelacao);
+        const novaRelacao = await createInBubble('1 - ProdutoFornecedor _25marco', {
+          produto: produto._id,
+          fornecedor: fornecedor._id,
+          nome_produto: operacao.modelo,
+          preco_original: operacao.precoOriginal,
+          preco_final: operacao.precoFinal,
+          preco_ordenacao: operacao.precoOrdenacao,
+          melhor_preco: false
+        });
         
-        if (!relacaoExistente) {
-          const novaRelacao = await createInBubble('1 - ProdutoFornecedor _25marco', {
-            produto: produto._id,
-            fornecedor: fornecedor._id,
-            nome_produto: operacao.modelo,
-            preco_original: operacao.precoOriginal,
-            preco_final: operacao.precoFinal,
-            preco_ordenacao: operacao.precoOrdenacao,
-            melhor_preco: false
-          });
-          return { tipo: 'criada', resultado: novaRelacao };
-        } else if (relacaoExistente.preco_original !== operacao.precoOriginal) {
-          const relacaoAtualizada = await updateInBubble('1 - ProdutoFornecedor _25marco', relacaoExistente._id, {
-            preco_original: operacao.precoOriginal,
-            preco_final: operacao.precoFinal,
-            preco_ordenacao: operacao.precoOrdenacao
-          });
-          return { tipo: 'atualizada', resultado: relacaoAtualizada };
-        }
-        
-        return { tipo: 'inalterada' };
+        console.log(`🔗 Relação criada: ${operacao.codigo} - ${operacao.loja}`);
+        return novaRelacao;
       }
     );
     
-    results.relacoes_criadas = relacaoResults.filter(r => r.success && r.result?.tipo === 'criada').length;
-    results.relacoes_atualizadas = relacaoResults.filter(r => r.success && r.result?.tipo === 'atualizada').length;
+    results.relacoes_criadas = relacaoResults.filter(r => r.success).length;
     results.erros.push(...relacaoErrors);
-    
-    // 4.4 APLICAR LÓGICA DE COTAÇÃO DIÁRIA - SIMPLIFICADA
-    console.log('\n🧹 Aplicando lógica de cotação diária...');
-    const operacoesZeramento = [];
-    
-    for (const [lojaName, codigosCotadosHoje] of codigosCotadosPorFornecedor) {
-      const fornecedor = fornecedorMap.get(lojaName);
-      if (!fornecedor) continue;
-      
-      const relacoesExistentes = produtoFornecedores.filter(pf => pf.fornecedor === fornecedor._id);
-      
-      for (const relacao of relacoesExistentes) {
-        const produto = produtos.find(p => p._id === relacao.produto);
-        if (!produto) continue;
-        
-        // Verificar se foi cotado hoje APENAS por código
-        const foiCotadoHoje = produto.id_planilha && codigosCotadosHoje.has(produto.id_planilha);
-        const temPreco = relacao.preco_original > 0;
-        
-        if (!foiCotadoHoje && temPreco) {
-          operacoesZeramento.push({
-            relacaoId: relacao._id,
-            codigo: produto.id_planilha,
-            loja: lojaName
-          });
-        }
-      }
-    }
-    
-    if (operacoesZeramento.length > 0) {
-      console.log(`🧹 Zerando ${operacoesZeramento.length} produtos não cotados...`);
-      const { results: zeramentoResults, errors: zeramentoErrors } = await processBatch(
-        operacoesZeramento,
-        async (operacao) => {
-          return await updateInBubble('1 - ProdutoFornecedor _25marco', operacao.relacaoId, {
-            preco_original: 0,
-            preco_final: 0,
-            preco_ordenacao: 999999
-          });
-        }
-      );
-      results.relacoes_zeradas = zeramentoResults.filter(r => r.success).length;
-      results.erros.push(...zeramentoErrors);
-    }
     
     console.log('\n✅ Sincronização simplificada concluída!');
     console.log('📊 Resultados da sincronização:', results);
@@ -897,7 +862,7 @@ async function syncWithBubble(csvData, gorduraValor) {
 // Rota principal para upload e processamento
 app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
   try {
-    console.log('\n🚀 === NOVA REQUISIÇÃO ===');
+    console.log('\n🚀 === NOVA REQUISIÇÃO (APENAS CÓDIGOS VÁLIDOS) ===');
     console.log('📤 Arquivo:', req.file ? req.file.originalname : 'Nenhum');
     
     if (!req.file) {
@@ -926,7 +891,7 @@ app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
     }
     
     // Processar o CSV
-    console.log('⏱️ Iniciando processamento - APENAS produtos com código...');
+    console.log('⏱️ Iniciando processamento simplificado (apenas códigos válidos)...');
     const startTime = Date.now();
     
     const csvData = await processCSV(filePath);
@@ -946,7 +911,7 @@ app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
     // Retornar resultado
     res.json({
       success: true,
-      message: 'CSV processado - APENAS produtos com código válido',
+      message: 'CSV processado (apenas códigos válidos) e sincronizado com sucesso',
       gordura_valor: gorduraValor,
       tempo_processamento: processingTime + 's',
       tamanho_arquivo: (req.file.size / 1024 / 1024).toFixed(2) + ' MB',
@@ -963,7 +928,6 @@ app.post('/process-csv', upload.single('csvFile'), async (req, res) => {
         total_produtos_com_codigo: csvData.reduce((acc, loja) => acc + loja.produtos_com_codigo, 0),
         total_produtos_sem_codigo: csvData.reduce((acc, loja) => acc + loja.produtos_sem_codigo, 0),
         produtos_criados: syncResults.produtos_criados,
-        produtos_atualizados: syncResults.produtos_atualizados,
         erros_encontrados: syncResults.erros.length
       }
     });
@@ -1013,6 +977,36 @@ app.post('/force-recalculate', async (req, res) => {
   }
 });
 
+// Rota para deletar manualmente toda a tabela ProdutoFornecedor
+app.post('/delete-all-relations', async (req, res) => {
+  try {
+    console.log('\n🗑️ === DELETANDO MANUALMENTE TODA A TABELA ProdutoFornecedor ===');
+    
+    const startTime = Date.now();
+    const results = await deleteAllProdutoFornecedor();
+    const endTime = Date.now();
+    const processingTime = (endTime - startTime) / 1000;
+    
+    console.log(`🗑️ Deleção concluída em ${processingTime}s`);
+    
+    res.json({
+      success: true,
+      message: 'Todos os itens da tabela ProdutoFornecedor foram deletados',
+      tempo_processamento: processingTime + 's',
+      resultados: results,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Erro na deleção:', error);
+    res.status(500).json({
+      error: 'Erro ao deletar tabela ProdutoFornecedor',
+      details: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 app.get('/stats', async (req, res) => {
   try {
     const [fornecedores, produtos, produtoFornecedores] = await Promise.all([
@@ -1021,21 +1015,21 @@ app.get('/stats', async (req, res) => {
       fetchAllFromBubble('1 - ProdutoFornecedor _25marco')
     ]);
     
-    // Estatísticas para produtos COM código (únicos processados agora)
-    const produtosComCodigo = produtos.filter(p => p.id_planilha && p.id_planilha.trim() !== '').length;
-    const produtosSemCodigo = produtos.filter(p => !p.id_planilha || p.id_planilha.trim() === '').length;
+    // Estatísticas para produtos com código válido
+    const produtosComCodigo = produtos.filter(p => p.id_planilha && p.id_planilha.trim() !== '' && p.id_planilha.trim().toUpperCase() !== 'SEM CÓDIGO').length;
+    const produtosSemCodigo = produtos.filter(p => !p.id_planilha || p.id_planilha.trim() === '' || p.id_planilha.trim().toUpperCase() === 'SEM CÓDIGO').length;
     
     res.json({
       total_fornecedores: fornecedores.length,
       total_produtos: produtos.length,
-      produtos_com_codigo: produtosComCodigo,
-      produtos_sem_codigo: produtosSemCodigo,
+      produtos_com_codigo_valido: produtosComCodigo,
+      produtos_sem_codigo_valido: produtosSemCodigo,
       total_relacoes: produtoFornecedores.length,
       fornecedores_ativos: fornecedores.filter(f => f.status_ativo === 'yes').length,
       produtos_com_preco: produtos.filter(p => p.menor_preco > 0).length,
       relacoes_ativas: produtoFornecedores.filter(pf => pf.status_ativo === 'yes').length,
       relacoes_com_preco: produtoFornecedores.filter(pf => pf.preco_final > 0).length,
-      observacao: 'Apenas produtos com código válido são processados',
+      observacao: 'Sistema agora processa APENAS produtos com códigos válidos',
       timestamp: new Date().toISOString()
     });
     
@@ -1047,13 +1041,13 @@ app.get('/stats', async (req, res) => {
   }
 });
 
-// Rota para buscar produto específico - SIMPLIFICADA (APENAS POR CÓDIGO)
+// Rota para buscar produto específico - APENAS POR CÓDIGO
 app.get('/produto/:codigo', async (req, res) => {
   try {
     const codigo = req.params.codigo;
     console.log(`🔍 Buscando produto por código: ${codigo}`);
     
-    // Buscar TODOS os produtos e filtrar localmente APENAS por código
+    // Buscar TODOS os produtos e filtrar localmente APENAS por id_planilha
     const todosProdutos = await fetchAllFromBubble('1 - produtos_25marco');
     const produto = todosProdutos.find(p => p.id_planilha === codigo);
     
@@ -1108,12 +1102,11 @@ app.get('/produto/:codigo', async (req, res) => {
         nome: produto.nome_completo,
         preco_menor: produto.menor_preco,
         preco_medio: produto.preco_medio,
-        qtd_fornecedores: produto.qtd_fornecedores,
-        tipo_identificador: 'codigo'
+        qtd_fornecedores: produto.qtd_fornecedores
       },
       busca_realizada: {
         codigo_buscado: codigo,
-        tipo_busca: 'codigo',
+        tipo_busca: 'codigo_apenas',
         encontrado_por: 'id_planilha'
       },
       stats_calculadas_tempo_real: statsCalculadas,
@@ -1136,26 +1129,26 @@ app.get('/produto/:codigo', async (req, res) => {
   }
 });
 
-// Rota para teste de saúde
+// Rota de teste de saúde
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     message: 'API funcionando corretamente',
-    version: '5.0.0-apenas-codigo-valido',
-    alteracoes_versao: [
-      'APENAS produtos com código válido são processados',
-      'IGNORADOS produtos sem código ou com código inválido',
-      'REMOVIDA lógica de busca por nome_completo',
-      'REMOVIDA lógica de evolução de produtos',
-      'SIMPLIFICADA lógica de sincronização',
-      'MANTIDAS todas as outras funcionalidades'
+    version: '5.0.0-apenas-codigos-validos',
+    melhorias_versao: [
+      'PROCESSA APENAS produtos com códigos válidos',
+      'IGNORA completamente produtos sem código',
+      'DELETA e RECRIA toda a tabela ProdutoFornecedor',
+      'Busca APENAS por código (id_planilha)',
+      'Lógica simplificada e mais rápida'
     ],
-    logica_simplificada: {
-      'processamento': 'Apenas produtos com isCodigoValido(codigo) === true',
-      'busca': 'Apenas por id_planilha (código)',
-      'criacao': 'Apenas se código não existe no banco',
-      'atualizacao': 'Apenas preços de produtos existentes por código'
-    },
+    funcionalidades_removidas: [
+      'Busca por nome_completo',
+      'Evolução de produtos (sem código ganha código)',
+      'Tratamento de produtos sem código',
+      'Lógica de cotação diária',
+      'Sistema de busca dupla'
+    ],
     configuracoes: {
       batch_size: PROCESSING_CONFIG.BATCH_SIZE,
       max_concurrent: PROCESSING_CONFIG.MAX_CONCURRENT,
@@ -1225,104 +1218,58 @@ app.get('/performance', (req, res) => {
     },
     uptime: Math.floor(process.uptime()) + ' segundos',
     configuracoes_otimizacao: PROCESSING_CONFIG,
-    observacao: 'Apenas produtos com código válido são processados',
     timestamp: new Date().toISOString()
   });
-});
-
-// Rota para debug de produtos - ATUALIZADA
-app.get('/debug/produtos-por-tipo', async (req, res) => {
-  try {
-    console.log('🔍 Analisando produtos por tipo de código...');
-    
-    const todosProdutos = await fetchAllFromBubble('1 - produtos_25marco');
-    
-    const produtosSemCodigo = todosProdutos.filter(p => 
-      !p.id_planilha || p.id_planilha.trim() === '' || p.id_planilha.trim().toUpperCase() === 'SEM CÓDIGO'
-    );
-    
-    const produtosComCodigo = todosProdutos.filter(p => 
-      p.id_planilha && p.id_planilha.trim() !== '' && p.id_planilha.trim().toUpperCase() !== 'SEM CÓDIGO'
-    );
-    
-    res.json({
-      total_produtos: todosProdutos.length,
-      produtos_com_codigo: produtosComCodigo.length,
-      produtos_sem_codigo: produtosSemCodigo.length,
-      porcentagem_com_codigo: ((produtosComCodigo.length / todosProdutos.length) * 100).toFixed(2) + '%',
-      porcentagem_sem_codigo: ((produtosSemCodigo.length / todosProdutos.length) * 100).toFixed(2) + '%',
-      observacao: 'Apenas produtos com código válido são processados na nova versão',
-      amostra_produtos_com_codigo: produtosComCodigo.slice(0, 5).map(p => ({
-        _id: p._id,
-        id_planilha: p.id_planilha,
-        nome_completo: p.nome_completo,
-        qtd_fornecedores: p.qtd_fornecedores,
-        menor_preco: p.menor_preco
-      })),
-      amostra_produtos_sem_codigo: produtosSemCodigo.slice(0, 5).map(p => ({
-        _id: p._id,
-        id_planilha: p.id_planilha || '(vazio)',
-        nome_completo: p.nome_completo,
-        qtd_fornecedores: p.qtd_fornecedores,
-        menor_preco: p.menor_preco,
-        status: 'IGNORADO na nova versão'
-      })),
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    res.status(500).json({
-      error: 'Erro ao analisar produtos',
-      details: error.message
-    });
-  }
 });
 
 // Rota de documentação atualizada
 app.get('/', (req, res) => {
   res.json({
-    message: 'API SIMPLIFICADA - Processamento APENAS de produtos com código válido',
-    version: '5.0.0-apenas-codigo-valido',
-    alteracoes_criticas: [
-      '🚫 IGNORA produtos sem código válido',
-      '🚫 IGNORA produtos com código vazio ou "SEM CÓDIGO"',
-      '🚫 REMOVIDA busca por nome_completo',
-      '🚫 REMOVIDA lógica de evolução de produtos',
-      '✅ MANTIDA lógica de processamento em lotes',
-      '✅ MANTIDA lógica final de recálculo',
-      '✅ MANTIDAS todas as outras funcionalidades'
+    message: 'API SIMPLIFICADA para processamento de CSV - APENAS CÓDIGOS VÁLIDOS',
+    version: '5.0.0-apenas-codigos-validos',
+    mudancas_criticas: [
+      '🎯 PROCESSA APENAS produtos com códigos válidos',
+      '🚫 IGNORA completamente produtos sem código',
+      '🗑️ DELETA e RECRIA toda a tabela ProdutoFornecedor a cada upload',
+      '🔍 BUSCA APENAS por código (id_planilha)',
+      '⚡ LÓGICA SIMPLIFICADA e mais rápida'
     ],
-    logica_simplificada: {
-      'validacao_codigo': 'isCodigoValido(codigo) === true',
-      'processamento': 'Apenas produtos que passam na validação',
-      'busca_produto': 'Apenas por id_planilha',
-      'criacao_produto': 'Apenas se código não existe',
-      'atualizacao_produto': 'Apenas preços via código',
-      'cotacao_diaria': 'Apenas códigos válidos são considerados'
+    fluxo_simplificado: {
+      'passo_1': 'Deleta TODOS os itens da tabela ProdutoFornecedor',
+      'passo_2': 'Processa CSV ignorando produtos sem código',
+      'passo_3': 'Busca produtos APENAS por código',
+      'passo_4': 'Cria produtos novos se não existir por código',
+      'passo_5': 'Cria TODAS as relações do zero',
+      'passo_6': 'Executa lógica final de recálculo'
     },
-    produtos_ignorados: [
-      'Produtos sem código',
-      'Produtos com código vazio ("")',
-      'Produtos com código "SEM CÓDIGO"',
-      'Produtos onde isCodigoValido() retorna false'
-    ],
     endpoints: {
-      'POST /process-csv': 'Processa CSV - APENAS códigos válidos',
+      'POST /process-csv': 'Processa CSV (apenas códigos válidos)',
       'POST /force-recalculate': 'EXECUTA a lógica final de recálculo',
+      'POST /delete-all-relations': 'Deleta manualmente toda tabela ProdutoFornecedor',
       'GET /stats': 'Estatísticas das tabelas',
       'GET /produto/:codigo': 'Busca produto APENAS por código',
-      'GET /debug/produtos-por-tipo': 'Debug de produtos com/sem código',
       'GET /health': 'Status da API simplificada',
       'GET /test-bubble': 'Testa conectividade com Bubble',
       'GET /performance': 'Monitora performance do servidor'
     },
+    parametros_obrigatorios: {
+      'gordura_valor': 'number - Valor a ser adicionado ao preço original'
+    },
+    estatisticas_retornadas: {
+      'tabela_deletada': 'Resultado da deleção da tabela ProdutoFornecedor',
+      'produtos_criados': 'Produtos realmente novos criados',
+      'fornecedores_criados': 'Novos fornecedores criados',
+      'relacoes_criadas': 'TODAS as relações criadas do zero',
+      'produtos_ignorados_sem_codigo': 'Produtos ignorados por não ter código válido'
+    },
     garantias: [
-      '✅ NUNCA processa produtos sem código válido',
-      '✅ NUNCA cria duplicatas de produtos',
-      '✅ SEMPRE usa código como identificador único',
-      '✅ MANTÉM alta performance com processamento em lotes',
-      '✅ PRESERVA todas as funcionalidades de recálculo',
-      '✅ SIMPLIFICA lógica de sincronização'
+      '✅ PROCESSA apenas produtos com códigos válidos',
+      '✅ IGNORA produtos sem código ou "SEM CÓDIGO"',
+      '✅ DELETA completamente a tabela a cada upload',
+      '✅ CRIA tudo do zero garantindo consistência',
+      '✅ LÓGICA SIMPLES e rápida',
+      '✅ BUSCA apenas por código',
+      '✅ SEM duplicatas ou complexidade desnecessária'
     ],
     configuracoes_performance: {
       'tamanho_lote': PROCESSING_CONFIG.BATCH_SIZE + ' itens',
@@ -1413,25 +1360,25 @@ app.listen(PORT, () => {
   console.log(`🚀 Servidor SIMPLIFICADO rodando na porta ${PORT}`);
   console.log(`📊 Acesse: http://localhost:${PORT}`);
   console.log(`🔗 Integração Bubble configurada`);
-  console.log(`⚡ Versão 5.0.0-apenas-codigo-valido`);
-  console.log(`🔧 ALTERAÇÕES CRÍTICAS IMPLEMENTADAS:`);
-  console.log(`   🚫 IGNORA produtos sem código válido`);
-  console.log(`   🚫 IGNORA produtos com código vazio ou "SEM CÓDIGO"`);
-  console.log(`   🚫 REMOVIDA busca por nome_completo`);
-  console.log(`   🚫 REMOVIDA lógica de evolução de produtos`);
-  console.log(`   ✅ MANTIDA lógica de processamento em lotes`);
-  console.log(`   ✅ MANTIDA lógica final de recálculo`);
+  console.log(`⚡ Versão 5.0.0-apenas-codigos-validos`);
+  console.log(`🔧 MUDANÇAS CRÍTICAS IMPLEMENTADAS:`);
+  console.log(`   🎯 PROCESSA APENAS produtos com códigos válidos`);
+  console.log(`   🚫 IGNORA completamente produtos sem código`);
+  console.log(`   🗑️ DELETA e RECRIA toda a tabela ProdutoFornecedor`);
+  console.log(`   🔍 BUSCA APENAS por código (id_planilha)`);
+  console.log(`   ⚡ LÓGICA SIMPLIFICADA e mais rápida`);
   console.log(`📈 Configurações de performance:`);
   console.log(`   - Lote: ${PROCESSING_CONFIG.BATCH_SIZE} itens`);
   console.log(`   - Concorrência: ${PROCESSING_CONFIG.MAX_CONCURRENT} operações`);
   console.log(`   - Retry: ${PROCESSING_CONFIG.RETRY_ATTEMPTS} tentativas`);
   console.log(`   - Timeout: ${PROCESSING_CONFIG.REQUEST_TIMEOUT}ms`);
   console.log(`   - Limite arquivo: 100MB`);
-  console.log(`\n🎯 LÓGICA SIMPLIFICADA IMPLEMENTADA!`);
-  console.log(`   ✅ Apenas produtos com código válido são processados`);
-  console.log(`   ✅ Produtos sem código são completamente ignorados`);
-  console.log(`   ✅ Busca e identificação apenas por código`);
-  console.log(`   ✅ Performance otimizada sem lógicas desnecessárias`);
+  console.log(`\n🎯 SISTEMA SIMPLIFICADO!`);
+  console.log(`   ✅ Deleta tabela ProdutoFornecedor`);
+  console.log(`   ✅ Processa apenas códigos válidos`);
+  console.log(`   ✅ Ignora produtos sem código`);
+  console.log(`   ✅ Cria tudo do zero`);
+  console.log(`   ✅ Lógica final recalcula tudo`);
 });
 
 module.exports = app;
