@@ -245,48 +245,145 @@ async function deleteFromBubble(tableName, itemId) {
   });
 }
 
-// NOVA FUNÇÃO: Deletar TODOS os itens da tabela ProdutoFornecedor
+// NOVA FUNÇÃO CORRIGIDA: Deletar TODOS os itens da tabela ProdutoFornecedor COM PAGINAÇÃO COMPLETA
 async function deleteAllProdutoFornecedor() {
-  console.log('\n🗑️ === DELETANDO TODOS OS ITENS DA TABELA ProdutoFornecedor ===');
+  console.log('\n🗑️ === DELETANDO TODOS OS ITENS DA TABELA ProdutoFornecedor (COM PAGINAÇÃO COMPLETA) ===');
   
   try {
-    // 1. Buscar TODOS os itens
-    const todosOsItens = await fetchAllFromBubble('1 - ProdutoFornecedor _25marco');
-    console.log(`🗑️ Encontrados ${todosOsItens.length} itens para deletar`);
+    let todosOsItens = [];
+    let cursor = 0;
+    let remaining = 1; // Iniciar com 1 para entrar no loop
+    let totalPaginas = 0;
     
-    if (todosOsItens.length === 0) {
-      console.log('✅ Tabela já está vazia');
-      return { itens_deletados: 0 };
+    // 1. BUSCAR TODOS OS ITENS COM PAGINAÇÃO CORRETA
+    console.log('🔍 Buscando TODOS os itens com paginação completa...');
+    
+    while (remaining > 0) {
+      totalPaginas++;
+      console.log(`📊 Buscando página ${totalPaginas} com cursor: ${cursor}`);
+      
+      const response = await retryOperation(async () => {
+        return await axios.get(`${BUBBLE_CONFIG.baseURL}/1 - ProdutoFornecedor _25marco`, {
+          headers: BUBBLE_CONFIG.headers,
+          params: { cursor, limit: 100 },
+          timeout: PROCESSING_CONFIG.REQUEST_TIMEOUT
+        });
+      });
+      
+      const data = response.data;
+      
+      if (!data.response || !data.response.results) {
+        throw new Error('Resposta inválida da API na busca para deleção');
+      }
+      
+      const novosItens = data.response.results;
+      
+      // Se não há novos resultados, sair do loop
+      if (!novosItens || novosItens.length === 0) {
+        console.log(`📊 Página ${totalPaginas}: Nenhum novo resultado, finalizando busca`);
+        break;
+      }
+      
+      todosOsItens = todosOsItens.concat(novosItens);
+      remaining = data.response.remaining || 0;
+      
+      console.log(`📊 Página ${totalPaginas}: ${novosItens.length} itens carregados (total: ${todosOsItens.length}, restam: ${remaining})`);
+      
+      // INCREMENTAR CURSOR DE 100 EM 100
+      cursor += 100;
+      
+      // Pequeno delay para evitar rate limiting
+      if (remaining > 0) {
+        await delay(50);
+      }
+      
+      // Proteção contra loop infinito
+      if (totalPaginas > 10000) {
+        console.warn(`⚠️ Atingido limite de páginas (${totalPaginas}). Possível loop infinito.`);
+        break;
+      }
     }
     
-    // 2. Deletar em lotes
+    console.log(`✅ BUSCA COMPLETA: ${todosOsItens.length} itens encontrados em ${totalPaginas} páginas`);
+    
+    if (todosOsItens.length === 0) {
+      console.log('✅ Tabela já está vazia - nada para deletar');
+      return { 
+        itens_deletados: 0, 
+        total_encontrados: 0, 
+        paginas_buscadas: totalPaginas,
+        erros: 0 
+      };
+    }
+    
+    // 2. DELETAR TODOS OS ITENS EM LOTES
+    console.log(`🗑️ Iniciando deleção de ${todosOsItens.length} itens...`);
+    
     const operacoesDeletar = todosOsItens.map(item => ({
-      itemId: item._id
+      itemId: item._id,
+      debug_info: `${item.nome_produto || 'sem_nome'}`
     }));
     
     const { results: deleteResults, errors: deleteErrors } = await processBatch(
       operacoesDeletar,
       async (operacao) => {
-        console.log(`🗑️ Deletando item ${operacao.itemId}`);
+        console.log(`🗑️ Deletando item ${operacao.itemId} (${operacao.debug_info})`);
         return await deleteFromBubble('1 - ProdutoFornecedor _25marco', operacao.itemId);
       }
     );
     
     const itensDeletados = deleteResults.filter(r => r.success).length;
-    console.log(`✅ Itens deletados: ${itensDeletados}/${todosOsItens.length}`);
+    const itensComErro = deleteResults.filter(r => !r.success).length;
+    
+    console.log(`✅ DELEÇÃO COMPLETA:`);
+    console.log(`   - Itens encontrados: ${todosOsItens.length}`);
+    console.log(`   - Itens deletados: ${itensDeletados}`);
+    console.log(`   - Itens com erro: ${itensComErro}`);
+    console.log(`   - Erros de processamento: ${deleteErrors.length}`);
+    
+    // 3. VERIFICAÇÃO FINAL - CONFIRMAR QUE TABELA ESTÁ VAZIA
+    console.log('🔍 Verificação final - confirmando que tabela está vazia...');
+    
+    const verificacaoResponse = await retryOperation(async () => {
+      return await axios.get(`${BUBBLE_CONFIG.baseURL}/1 - ProdutoFornecedor _25marco`, {
+        headers: BUBBLE_CONFIG.headers,
+        params: { cursor: 0, limit: 1 },
+        timeout: PROCESSING_CONFIG.REQUEST_TIMEOUT
+      });
+    });
+    
+    const itensRestantes = verificacaoResponse.data?.response?.results?.length || 0;
+    const totalRestante = verificacaoResponse.data?.response?.count || 0;
+    
+    if (itensRestantes > 0 || totalRestante > 0) {
+      console.error(`❌ ERRO: Ainda existem ${totalRestante} itens na tabela após deleção!`);
+      throw new Error(`Deleção incompleta: ${totalRestante} itens ainda existem na tabela`);
+    }
+    
+    console.log('✅ CONFIRMADO: Tabela está completamente vazia!');
     
     if (deleteErrors.length > 0) {
-      console.warn(`⚠️ Erros na deleção: ${deleteErrors.length}`);
+      console.warn(`⚠️ Avisos durante a deleção: ${deleteErrors.length} erros`);
+      deleteErrors.forEach((erro, index) => {
+        console.warn(`   Erro ${index + 1}: ${erro.error}`);
+      });
     }
     
     return {
       itens_deletados: itensDeletados,
       total_encontrados: todosOsItens.length,
-      erros: deleteErrors.length
+      paginas_buscadas: totalPaginas,
+      erros: deleteErrors.length,
+      verificacao_final: {
+        itens_restantes: itensRestantes,
+        total_restante: totalRestante,
+        tabela_vazia: itensRestantes === 0 && totalRestante === 0
+      },
+      sucesso_completo: itensDeletados === todosOsItens.length && itensRestantes === 0
     };
     
   } catch (error) {
-    console.error('❌ Erro ao deletar itens:', error);
+    console.error('❌ ERRO CRÍTICO na deleção completa:', error);
     throw error;
   }
 }
