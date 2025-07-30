@@ -346,6 +346,18 @@ async function backupParaHistorico() {
           item_id_original: operacao.item_id_original
         };
         
+    const { results: backupResults, errors: backupErrors } = await processBatch(
+      operacoesCopia,
+      async (operacao) => {
+        console.log(`📋 Copiando para histórico: ${operacao.debug_info}`);
+        
+        // Adicionar timestamp do backup
+        const dadosComTimestamp = {
+          ...operacao.dadosOriginais,
+          data_backup: new Date().toISOString(),
+          item_id_original: operacao.item_id_original
+        };
+        
         return await createInBubble('1 - historico_precos', dadosComTimestamp);
       }
     );
