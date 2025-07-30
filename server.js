@@ -245,159 +245,18 @@ async function deleteFromBubble(tableName, itemId) {
   });
 }
 
-// NOVA FUNÇÃO: Copiar todos os itens para histórico ANTES de deletar
-async function backupParaHistorico() {
-  console.log('\n📋 === COPIANDO DADOS PARA HISTÓRICO ANTES DA DELEÇÃO ===');
-  
-  try {
-    let todosOsItens = [];
-    let cursor = 0;
-    let remaining = 1;
-    let totalPaginas = 0;
-    
-    // 1. BUSCAR TODOS OS ITENS DA TABELA ATUAL COM PAGINAÇÃO COMPLETA
-    console.log('📊 Buscando TODOS os itens da tabela ProdutoFornecedor para backup...');
-    
-    while (remaining > 0) {
-      totalPaginas++;
-      console.log(`📊 Buscando página ${totalPaginas} para backup com cursor: ${cursor}`);
-      
-      const response = await retryOperation(async () => {
-        return await axios.get(`${BUBBLE_CONFIG.baseURL}/1 - ProdutoFornecedor _25marco`, {
-          headers: BUBBLE_CONFIG.headers,
-          params: { cursor, limit: 100 },
-          timeout: PROCESSING_CONFIG.REQUEST_TIMEOUT
-        });
-      });
-      
-      const data = response.data;
-      
-      if (!data.response || !data.response.results) {
-        throw new Error('Resposta inválida da API na busca para backup');
-      }
-      
-      const novosItens = data.response.results;
-      
-      // Se não há novos resultados, sair do loop
-      if (!novosItens || novosItens.length === 0) {
-        console.log(`📊 Backup página ${totalPaginas}: Nenhum novo resultado, finalizando busca`);
-        break;
-      }
-      
-      todosOsItens = todosOsItens.concat(novosItens);
-      remaining = data.response.remaining || 0;
-      
-      console.log(`📊 Backup página ${totalPaginas}: ${novosItens.length} itens carregados (total: ${todosOsItens.length}, restam: ${remaining})`);
-      
-      // INCREMENTAR CURSOR DE 100 EM 100
-      cursor += 100;
-      
-      // Pequeno delay para evitar rate limiting
-      if (remaining > 0) {
-        await delay(50);
-      }
-      
-      // Proteção contra loop infinito
-      if (totalPaginas > 10000) {
-        console.warn(`⚠️ Backup: Atingido limite de páginas (${totalPaginas}). Possível loop infinito.`);
-        break;
-      }
-    }
-    
-    console.log(`✅ BACKUP BUSCA COMPLETA: ${todosOsItens.length} itens encontrados em ${totalPaginas} páginas`);
-    
-    if (todosOsItens.length === 0) {
-      console.log('ℹ️ Tabela ProdutoFornecedor está vazia - nada para fazer backup');
-      return { 
-        itens_copiados: 0, 
-        total_encontrados: 0, 
-        paginas_buscadas: totalPaginas,
-        erros: 0 
-      };
-    }
-    
-    // 2. COPIAR TODOS OS ITENS PARA A TABELA DE HISTÓRICO
-    console.log(`📋 Iniciando cópia de ${todosOsItens.length} itens para histórico...`);
-    
-    const operacoesCopia = todosOsItens.map(item => {
-      const { _id, ...dadosOriginais } = item;
-      
-      // Preparar dados para histórico removendo campos específicos do Bubble
-      const dadosParaHistorico = {
-        ...dadosOriginais,
-        data_backup: new Date().toISOString(),
-        item_id_original: _id
-      };
-      
-      return {
-        dadosOriginais: dadosParaHistorico,
-        debug_info: `${item.nome_produto || 'sem_nome'} - ${item.preco_final || 0}`,
-        item_id_original: _id
-      };
-    });
-    
-    const { results: backupResults, errors: backupErrors } = await processBatch(
-      operacoesCopia,
-      async (operacao) => {
-        console.log(`📋 Copiando para histórico: ${operacao.debug_info}`);
-        
-        return await createInBubble('1 - historico_precos', operacao.dadosOriginais);
-      }
-    );
-    
-    const itensCopiados = backupResults.filter(r => r.success).length;
-    const itensComErro = backupResults.filter(r => !r.success).length;
-    
-    console.log(`✅ BACKUP COMPLETO:`);
-    console.log(`   - Itens encontrados: ${todosOsItens.length}`);
-    console.log(`   - Itens copiados para histórico: ${itensCopiados}`);
-    console.log(`   - Itens com erro: ${itensComErro}`);
-    console.log(`   - Erros de processamento: ${backupErrors.length}`);
-    
-    if (backupErrors.length > 0) {
-      console.warn(`⚠️ Avisos durante o backup: ${backupErrors.length} erros`);
-      backupErrors.forEach((erro, index) => {
-        console.warn(`   Erro backup ${index + 1}: ${erro.error}`);
-      });
-    }
-    
-    if (itensCopiados !== todosOsItens.length) {
-      console.error(`❌ ATENÇÃO: Backup incompleto! ${itensCopiados}/${todosOsItens.length} itens copiados`);
-    } else {
-      console.log('✅ BACKUP 100% COMPLETO! Todos os itens foram copiados para o histórico');
-    }
-    
-    return {
-      itens_copiados: itensCopiados,
-      total_encontrados: todosOsItens.length,
-      paginas_buscadas: totalPaginas,
-      erros: backupErrors.length,
-      sucesso_completo: itensCopiados === todosOsItens.length
-    };
-    
-  } catch (error) {
-    console.error('❌ ERRO CRÍTICO no backup para histórico:', error);
-    throw error;
-  }
-}
-
 // NOVA FUNÇÃO CORRIGIDA: Deletar TODOS os itens da tabela ProdutoFornecedor COM PAGINAÇÃO COMPLETA
 async function deleteAllProdutoFornecedor() {
   console.log('\n🗑️ === DELETANDO TODOS OS ITENS DA TABELA ProdutoFornecedor (COM PAGINAÇÃO COMPLETA) ===');
   
   try {
-    // PRIMEIRO: FAZER BACKUP PARA HISTÓRICO
-    console.log('🔄 ETAPA 1: Fazendo backup para histórico...');
-    const backupResults = await backupParaHistorico();
-    console.log('📋 Backup concluído:', backupResults);
-    
-    // SEGUNDO: BUSCAR TODOS OS ITENS PARA DELEÇÃO
     let todosOsItens = [];
     let cursor = 0;
     let remaining = 1; // Iniciar com 1 para entrar no loop
     let totalPaginas = 0;
     
-    console.log('🔄 ETAPA 2: Buscando TODOS os itens para deleção...');
+    // 1. BUSCAR TODOS OS ITENS COM PAGINAÇÃO CORRETA
+    console.log('🔍 Buscando TODOS os itens com paginação completa...');
     
     while (remaining > 0) {
       totalPaginas++;
@@ -450,7 +309,6 @@ async function deleteAllProdutoFornecedor() {
     if (todosOsItens.length === 0) {
       console.log('✅ Tabela já está vazia - nada para deletar');
       return { 
-        backup_historico: backupResults,
         itens_deletados: 0, 
         total_encontrados: 0, 
         paginas_buscadas: totalPaginas,
@@ -458,8 +316,8 @@ async function deleteAllProdutoFornecedor() {
       };
     }
     
-    // TERCEIRO: DELETAR TODOS OS ITENS EM LOTES
-    console.log(`🔄 ETAPA 3: Iniciando deleção de ${todosOsItens.length} itens...`);
+    // 2. DELETAR TODOS OS ITENS EM LOTES
+    console.log(`🗑️ Iniciando deleção de ${todosOsItens.length} itens...`);
     
     const operacoesDeletar = todosOsItens.map(item => ({
       itemId: item._id,
@@ -483,8 +341,8 @@ async function deleteAllProdutoFornecedor() {
     console.log(`   - Itens com erro: ${itensComErro}`);
     console.log(`   - Erros de processamento: ${deleteErrors.length}`);
     
-    // QUARTO: VERIFICAÇÃO FINAL - CONFIRMAR QUE TABELA ESTÁ VAZIA
-    console.log('🔄 ETAPA 4: Verificação final - confirmando que tabela está vazia...');
+    // 3. VERIFICAÇÃO FINAL - CONFIRMAR QUE TABELA ESTÁ VAZIA
+    console.log('🔍 Verificação final - confirmando que tabela está vazia...');
     
     const verificacaoResponse = await retryOperation(async () => {
       return await axios.get(`${BUBBLE_CONFIG.baseURL}/1 - ProdutoFornecedor _25marco`, {
@@ -512,7 +370,6 @@ async function deleteAllProdutoFornecedor() {
     }
     
     return {
-      backup_historico: backupResults,
       itens_deletados: itensDeletados,
       total_encontrados: todosOsItens.length,
       paginas_buscadas: totalPaginas,
