@@ -320,8 +320,12 @@ async function backupParaHistorico() {
     console.log(`📋 Iniciando cópia de ${todosOsItens.length} itens para histórico...`);
     
     const operacoesCopia = todosOsItens.map(item => {
-      // Remover o _id para criar novo registro e adicionar timestamp
-      const { _id, Created Date, Modified Date, ...dadosParaHistorico } = item;
+              // Adicionar timestamp do backup
+        const dadosComTimestamp = {
+          ...operacao.dadosOriginais,
+          data_backup: new Date().toISOString(),
+          item_id_original: operacao.item_id_original
+        };
       
       return {
         dadosOriginais: dadosParaHistorico,
